@@ -108,8 +108,63 @@ function extractSlide(xml) {
     }
   }
   for (const t of tables) lines.push(t)
-  return { title: squash(title), text: lines.join('\n').trim() }
+  const bodySizes = body
+    .filter((s) => s !== titled && s.size > 0)
+    .map((s) => s.size)
+    .sort((a, b) => a - b)
+  return {
+    title: squash(title),
+    text: lines.join('\n').trim(),
+    titleSize: titled?.size || biggest?.size || 0,
+    bodySize: bodySizes.length ? bodySizes[Math.floor(bodySizes.length / 2)] : 0,
+  }
 }
+
+/** `secHead` marks a section-title slide in the deck's own layout. */
+function slideLayoutType(zip, slidePart) {
+  try {
+    const base = slidePart.slice(slidePart.lastIndexOf('/') + 1)
+    const relsXml = zip.text(`ppt/slides/_rels/${base}.rels`)
+    if (!relsXml) return ''
+    for (const rel of parseRels(relsXml).values()) {
+      if (!/slideLayout/.test(rel.type || '')) continue
+      const part = resolvePart('ppt/slides', rel.target)
+      const xml = zip.text(part) || ''
+      return (/<p:sldLayout\b[^>]*\btype="([^"]+)"/.exec(xml) || [])[1] || ''
+    }
+  } catch {}
+  return ''
+}
+
+/** Sections written by PowerPoint 2010+ (`p14:sectionLst` in presentation.xml). */
+function readSections(pres, rels) {
+  const list = []
+  const sectionRe = /<p14:section\b([^>]*)>([\s\S]*?)<\/p14:section>/g
+  for (const m of pres.matchAll(sectionRe)) {
+    const name = (/name="([^"]*)"/.exec(m[1]) || [])[1] || ''
+    const ids = [...m[2].matchAll(/<p14:sldId\b[^>]*\bid="(\d+)"/g)].map((x) => x[1])
+    list.push({ name: decodeXml(name), ids })
+  }
+  return list
+}
+
+function parsePptxSections(pres, rels, order) {
+  const numeric = new Map()
+  for (const m of pres.matchAll(/<p:sldId\b[^>]*\bid="(\d+)"[^>]*\br:id="([^"]+)"/g)) {
+    const rel = rels.get(m[2])
+    if (rel) numeric.set(m[1], resolvePart('ppt', rel.target))
+  }
+  const sections = readSections(pres, rels)
+    .map((section) => {
+      const parts = section.ids.map((id) => numeric.get(id)).filter(Boolean)
+      const pages = parts.map((part) => order.indexOf(part)).filter((i) => i >= 0).map((i) => i + 1)
+      return { name: section.name, pages: [...new Set(pages)].sort((a, b) => a - b) }
+    })
+    .filter((s) => s.pages.length)
+  return sections
+}
+
+export const __debug = { readSections, parsePptxSections }
 
 export function parsePptx(buf, fileName) {
   const zip = readZip(buf)
@@ -138,10 +193,19 @@ export function parsePptx(buf, fileName) {
     // reads like a list of titles
     const notes = slideNotes(zip, name)
     const text = notes ? `${s.text}\n【备注】${notes}` : s.text
-    pages.push({ index: pages.length + 1, title: s.title, text, notes })
+    pages.push({
+      index: pages.length + 1,
+      title: s.title,
+      text,
+      notes,
+      layout: slideLayoutType(zip, name),
+      titleSize: s.titleSize,
+      bodySize: s.bodySize,
+    })
   }
   const title = guessDeckTitle(pages, fileName)
-  return { kind: 'pptx', title, pages, blocks: [] }
+  const sections = parsePptxSections(pres, rels, order)
+  return { kind: 'pptx', title, pages, blocks: [], sections }
 }
 
 /** Notes slide text for one slide part, or '' when the deck has none. */

@@ -25,6 +25,7 @@ import { assessQuality } from '../core/quality.js'
 import { detectDomain } from '../core/domain.js'
 import { supportScore, evaluateSummary } from '../core/verify.js'
 import { createStore } from '../core/store.js'
+import { __debug as ooxmlDebug } from '../core/ooxml.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
 
 const ARGV = process.argv.slice(2)
@@ -251,6 +252,33 @@ check('同名章节：重复页眉合并且不出现同名', () => {
   assert(new Set(titles).size === titles.length, `出现同名章：${titles.join(' | ')}`)
   assert(titles.some((t) => /p\d+–\d+/.test(t)), `非相邻同名没有付页码：${titles.join(' | ')}`)
   return `${one.chapters.length} 章 / ${two.chapters.length} 章带区间`
+})
+
+check('PPTX 节：按 slide id 还原节边界（id 非单调）', () => {
+  const pres = `<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst>
+    <p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId3"/>
+    <p:sldId id="259" r:id="rId4"/><p:sldId id="258" r:id="rId5"/>
+  </p:sldIdLst>
+  <p:extLst><p:ext uri="{521415D9-36F7-43E2-AB2F-B90AF26B5E84}">
+    <p14:sectionLst>
+      <p14:section name="Introduction" id="{01F07B81}"><p14:sldIdLst><p14:sldId id="256"/></p14:sldIdLst></p14:section>
+      <p14:section name="Content" id="{1FEF2C88}"><p14:sldIdLst><p14:sldId id="257"/><p14:sldId id="259"/></p14:sldIdLst></p14:section>
+      <p14:section name="Conclusion" id="{CA1E145A}"><p14:sldIdLst><p14:sldId id="258"/></p14:sldIdLst></p14:section>
+    </p14:sectionLst></p:ext></p:extLst></p:presentation>`
+  const rels = new Map([
+    ['rId2', { type: 'slide', target: 'slides/slide1.xml' }],
+    ['rId3', { type: 'slide', target: 'slides/slide2.xml' }],
+    ['rId4', { type: 'slide', target: 'slides/slide3.xml' }],
+    ['rId5', { type: 'slide', target: 'slides/slide4.xml' }],
+  ])
+  const order = ['ppt/slides/slide1.xml', 'ppt/slides/slide2.xml', 'ppt/slides/slide3.xml', 'ppt/slides/slide4.xml']
+  const sections = ooxmlDebug.parsePptxSections(pres, rels, order)
+  assert(sections.length === 3, `解析出 ${sections.length} 个节`)
+  assert(sections[0].name === 'Introduction' && sections[0].pages.join(',') === '1', `第一节：${JSON.stringify(sections[0])}`)
+  assert(sections[1].pages.join(',') === '2,3', `Content 应覆盖第 2、3 页：${JSON.stringify(sections[1])}`)
+  assert(sections[2].pages.join(',') === '4', `Conclusion 应为第 4 页：${JSON.stringify(sections[2])}`)
+  return sections.map((s) => `${s.name}:${s.pages.join('+')}`).join(' / ')
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */
