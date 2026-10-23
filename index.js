@@ -15,6 +15,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import Schema from 'schemastery'
 import { createStore, resolveDataDir } from './core/store.js'
 import { createBiliClient } from './core/bili.js'
 import { runPipeline, rerunChapter } from './core/pipeline.js'
@@ -33,6 +34,27 @@ const PKG = (() => {
 
 export const name = 'course-assistant'
 export const inject = ['tools', 'webServer']
+
+/**
+ * Every knob the panel and the tool read, validated at activation. A bad value
+ * fails the plugin loudly instead of starting half-configured.
+ * Precedence for every field: request option > this config > built-in default.
+ */
+export const Config = Schema.object({
+  dataDir: Schema.string().default('').description('上传/缓存/报告目录，留空用 <DSH_HOME>/course-assistant'),
+  concurrency: Schema.natural().min(1).max(5).default(4).description('并行章节数'),
+  withVideos: Schema.boolean().default(true).description('默认是否检索 B 站网课'),
+  domain: Schema.string().default('').description('强制课程领域（如 C++），留空自动识别'),
+  ocrMaxPages: Schema.natural().min(1).max(400).default(60).description('OCR 重读页数上限'),
+  ocrEngine: Schema.union([Schema.const(''), Schema.const('windows'), Schema.const('rapidocr')])
+    .default('')
+    .description('OCR 引擎，留空自动选择'),
+  ocrPython: Schema.string().default('').description('rapidocr 用的 python 可执行文件'),
+  provider: Schema.string().default('').description('摘要模型 provider，留空跟随默认模型'),
+  model: Schema.string().default('').description('摘要模型名，留空跟随默认模型'),
+  spacingMs: Schema.natural().min(1000).max(60000).default(1000).description('B 站请求间隔（毫秒）'),
+  keepUploadsDays: Schema.natural().min(1).max(90).default(7).description('上传文件保留天数'),
+})
 
 const ROUTE = '/course-assistant'
 const MAX_UPLOAD = 60 * 1024 * 1024
@@ -86,21 +108,23 @@ export function apply(ctx, config = {}) {
   const uploads = new Map()
   const disposers = []
 
+  const pick = (value) => (value === '' || value == null ? undefined : value)
+  // precedence is the same for every field: request option > config > default
   const optionsOf = (raw = {}) => ({
     withVideos: raw.withVideos !== false && config.withVideos !== false,
     concurrency: Math.max(1, Math.min(5, Number(raw.concurrency) || Number(config.concurrency) || 4)),
     ocr: raw.ocr === true,
     ocrMaxPages: Number(raw.ocrMaxPages) || Number(config.ocrMaxPages) || 60,
-    ocrEngine: raw.ocrEngine || config.ocrEngine || undefined,
-    ocrPython: raw.ocrPython || config.ocrPython || undefined,
-    domain: config.domain || raw.domain || undefined,
+    ocrEngine: pick(raw.ocrEngine) || pick(config.ocrEngine),
+    ocrPython: pick(raw.ocrPython) || pick(config.ocrPython),
+    domain: pick(raw.domain) || pick(config.domain),
   })
 
   function resolveLlm() {
     const svc = ctx.get('llm')
     if (!svc) return null
-    let provider = config.provider
-    let model = config.model
+    let provider = pick(config.provider)
+    let model = pick(config.model)
     if (!provider || !model) {
       try {
         const sel = ctx.get('agentDefaultModel')?.currentSelection?.()
