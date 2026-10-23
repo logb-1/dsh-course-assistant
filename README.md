@@ -38,16 +38,43 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 
 ## 安装 / 重载
 
-已在 npm 上发布：[`dsh-course-assistant`](https://www.npmjs.com/package/dsh-course-assistant)
+前置条件两条：**装好 DeepSeek Harness**；profile 里**配好一个可用模型**（缺失时会退回本地抽取摘要）。
+
+### 装法一：让 Agent 装（最省事，已验证）
+
+在 Harness 对话框里直接说：
+
+> 帮我安装插件 dsh-course-assistant（用 plugin_manager，action=install_bundle，target 用包名）
+
+Agent 会执行 `install_bundle(target="dsh-course-assistant")`，从 npm 装；`application: applied` 后刷新页面即可。
+
+### 装法二：GitHub ZIP（不用 git、不用 Node，已验证目录结构）
+
+1. 打开 <https://github.com/logb-1/dsh-course-assistant> → 绿色 **Code** → **Download ZIP**
+2. 解压，得到 `dsh-course-assistant-main/`（这一层里有 `package.json`）
+3. 把这一层的**绝对路径**交给 Agent：
+
+> 帮我安装这个目录里的插件：`C:\Users\你\Downloads\dsh-course-assistant-main`
+
+### 装法三：git clone（开发者）
 
 ```bash
-npm i dsh-course-assistant        # 或 pnpm add dsh-course-assistant
-# 也可以直接指向仓库目录：
 git clone https://github.com/logb-1/dsh-course-assistant.git
+npm i dsh-course-assistant        # 或者走 npm
 ```
 
-装好后用本 profile 的 `plugin_manager` 工具：`action: install_bundle`，`target` 指向**包目录或克隆下来的目录**
-（绝对路径）。装好后刷新页面，左侧栏出现「课程助手」图标。
+然后 `install_bundle`，`target` 指向克隆下来的目录（绝对路径）。
+
+### 装法四：github: 规格（可选，需能稳定连上 github.com）
+
+```
+install_bundle(target="github:logb-1/dsh-course-assistant")
+```
+
+已验证 pnpm 能解析并下载（21 个文件、`cordis.patch.yml` 齐全），但插件管理器会先做 **5 秒 github.com 连通性预检**，
+网络差时会直接失败；另外 Windows 上若残留同名 junction 会报 `EPERM`。网络不稳时用装法一或二。
+
+装好后刷新页面，左侧栏出现「课程助手」图标。
 
 - 只想试用不装：`node tools/smoke.mjs <课件文件>` 需要插件已装（它打的是宿主路由）。
 - 从零验证安装：`GET /course-assistant/health` → `{ok:true, version, llm, pdf}`。
