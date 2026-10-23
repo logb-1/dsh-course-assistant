@@ -133,12 +133,102 @@ function parseJson(raw) {
   }
 }
 
+/**
+ * Long chapters used to be cut as "first 80% + last 18%", which hides the middle
+ * (a 14k-char chapter showed ~3.6k and dropped ~10k entirely).
+ *
+ * Instead: split into passages, score them with TF-IDF over character bigrams
+ * and greedily keep the most informative ones within the budget, then restore
+ * document order. Zero extra model calls; pure local.
+ */
+function bigramsOf(text) {
+  const clean = String(text || '').replace(/[\s\p{P}\p{S}]/gu, '')
+  const out = []
+  for (let i = 0; i + 2 <= clean.length; i += 1) out.push(clean.slice(i, i + 2))
+  return out
+}
+
+function splitPassages(text) {
+  const paras = String(text || '')
+    .split(/\n{2,}/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (paras.length >= 4) return paras
+  const sentences = String(text || '')
+    .split(/(?<=[。！？!?；;])\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  return sentences.length >= 4 ? sentences : paras
+}
+
+export function selectPassages(text, max = MAX_CHAPTER_CHARS) {
+  const body = String(text || '').trim()
+  if (body.length <= max) return body
+  const passages = splitPassages(body)
+  if (passages.length < 4) {
+    // nothing to choose from: keep both ends rather than losing everything
+    const head = body.slice(0, Math.floor(max * 0.8))
+    const tail = body.slice(-Math.floor(max * 0.18))
+    return `${head}\n…（中间略）…\n${tail}`
+  }
+  const gramsOf = passages.map(bigramsOf)
+  const df = new Map()
+  const total = new Map()
+  for (const grams of gramsOf) {
+    const seen = new Set()
+    for (const gram of grams) {
+      total.set(gram, (total.get(gram) || 0) + 1)
+      if (!seen.has(gram)) {
+        seen.add(gram)
+        df.set(gram, (df.get(gram) || 0) + 1)
+      }
+    }
+  }
+  // a term present in every passage carries no information (idf ≈ 0); a term
+  // seen once is usually a number or a typo. Score only the middle band.
+  const N = passages.length
+  const usable = (gram) => {
+    const f = df.get(gram) || 1
+    return f >= 2 && f <= N * 0.8
+  }
+  const scored = passages.map((passage, index) => {
+    const grams = gramsOf[index].filter(usable)
+    if (!grams.length) return { passage, index, score: 0 }
+    let sum = 0
+    for (const gram of grams) {
+      const tf = total.get(gram) || 1
+      const idf = Math.log(1 + N / (df.get(gram) || 1))
+      sum += tf * idf
+    }
+    return { passage, index, score: sum / grams.length }
+  })
+  const chosen = []
+  const picked = new Set()
+  let used = 0
+  // the opening states what the chapter is about, the closing often summarises it
+  for (const anchor of [scored[0], scored[scored.length - 1]]) {
+    if (!anchor || picked.has(anchor.index)) continue
+    const cost = anchor.passage.length + 2
+    if (used + cost > max) continue
+    chosen.push(anchor)
+    picked.add(anchor.index)
+    used += cost
+  }
+  for (const item of [...scored].sort((a, b) => b.score - a.score || a.index - b.index)) {
+    if (picked.has(item.index)) continue
+    const cost = item.passage.length + 2
+    if (used + cost > max) continue
+    chosen.push(item)
+    picked.add(item.index)
+    used += cost
+  }
+  chosen.sort((a, b) => a.index - b.index)
+  const text2 = chosen.map((c) => c.passage).join('\n\n')
+  return chosen.length < passages.length ? `${text2}\n…（已按相关性节选 ${chosen.length}/${passages.length} 段）…` : text2
+}
+
 export function truncate(text, max = MAX_CHAPTER_CHARS) {
-  const t = String(text || '').trim()
-  if (t.length <= max) return t
-  const head = t.slice(0, Math.floor(max * 0.8))
-  const tail = t.slice(-Math.floor(max * 0.18))
-  return `${head}\n…（中间略）…\n${tail}`
+  return selectPassages(text, max)
 }
 
 export async function summarizeChapter({ llm, provider, model, courseTitle, chapter, text, outline, domain, signal }) {

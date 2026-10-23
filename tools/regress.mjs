@@ -24,6 +24,7 @@ import { buildOutline } from '../core/outline.js'
 import { assessQuality } from '../core/quality.js'
 import { detectDomain } from '../core/domain.js'
 import { supportScore, evaluateSummary } from '../core/verify.js'
+import { selectPassages } from '../core/summarize.js'
 import { createStore } from '../core/store.js'
 import { __debug as ooxmlDebug } from '../core/ooxml.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
@@ -279,6 +280,25 @@ check('PPTX 节：按 slide id 还原节边界（id 非单调）', () => {
   assert(sections[1].pages.join(',') === '2,3', `Content 应覆盖第 2、3 页：${JSON.stringify(sections[1])}`)
   assert(sections[2].pages.join(',') === '4', `Conclusion 应为第 4 页：${JSON.stringify(sections[2])}`)
   return sections.map((s) => `${s.name}:${s.pages.join('+')}`).join(' / ')
+})
+
+check('长章节：中间的关键段落不会被截断丢掉', () => {
+  const filler = Array.from(
+    { length: 60 },
+    (_, i) => `第 ${i + 1} 段背景介绍。` + '这里给出一个与本章主题没有直接关系的补充例子，用来占位并拉长篇幅。'.repeat(3),
+  )
+  const key = [
+    '需求价格弹性等于需求量变化百分比除以价格变化百分比，这是本章的核心定义。'.repeat(2),
+    '弹性大于一时称为富有弹性，小于一时称为缺乏弹性，理解弹性是后续定价策略的基础。'.repeat(2),
+    '交叉弹性用于判断两种商品是替代品还是互补品，收入弹性衡量需求对收入变化的反应。'.repeat(2),
+  ]
+  const body = [...filler.slice(0, 25), key[0], ...filler.slice(25, 40), key[1], ...filler.slice(40, 55), key[2], ...filler.slice(55)].join('\n\n')
+  const kept = selectPassages(body, 1200)
+  assert(kept.length <= 1400, `节选后仍然过长：${kept.length}`)
+  assert(kept.includes('需求价格弹性'), '核心定义段被丢掉了')
+  assert(kept.includes('富有弹性'), '弹性大小段被丢掉了')
+  assert(kept.includes('交叉弹性'), '交叉弹性段被丢掉了')
+  return `${body.length} → ${kept.length} 字，3/3 关键段保留`
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */
