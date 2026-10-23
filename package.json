@@ -1,0 +1,54 @@
+{
+  "name": "dsh-course-assistant",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "课程文件 → 目录识别 · 分章知识点总结 · B 站网课推荐 · 学习报告（DeepSeek Harness bundle）",
+  "author": "logb-1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/logb-1/dsh-course-assistant.git"
+  },
+  "homepage": "https://github.com/logb-1/dsh-course-assistant#readme",
+  "bugs": {
+    "url": "https://github.com/logb-1/dsh-course-assistant/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "course",
+    "slides",
+    "pptx",
+    "pdf",
+    "bilibili",
+    "study-notes"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "core/*.js",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+    }
+  }
+}

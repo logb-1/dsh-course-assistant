@@ -1,0 +1,11 @@
+# generated reports and user course material stay local
+samples/
+# plugin runtime data (when dataDir is pointed here)
+data/
+node_modules/
+# test / render scratch
+.tmp*
+.dsh-office-*
+*.tmp
+*.log
+pnpm-lock.yaml

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Course Assistant · slides to notes and Bilibili courses",
+    "description": "Drop in PPTX/PDF/DOCX/MD lecture files to extract the outline, summarize each chapter's key points, find matching Bilibili courses, and export a Markdown/PDF study report."
+  }
+}

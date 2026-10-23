@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Course Assistant">
+  <defs>
+    <linearGradient id="ca-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#0EA5A4"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#ca-bg)"/>
+  <rect x="14" y="12" width="30" height="40" rx="4.5" fill="#FFFFFF" opacity="0.96"/>
+  <rect x="19" y="19" width="20" height="3" rx="1.5" fill="#3B82F6" opacity="0.85"/>
+  <rect x="19" y="26" width="14" height="3" rx="1.5" fill="#3B82F6" opacity="0.55"/>
+  <rect x="19" y="33" width="17" height="3" rx="1.5" fill="#3B82F6" opacity="0.45"/>
+  <circle cx="45" cy="43" r="11" fill="#FFFFFF"/>
+  <path d="M41.5 37.6l8.2 5.4-8.2 5.4z" fill="#0EA5A4"/>
+</svg>

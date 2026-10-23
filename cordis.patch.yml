@@ -1,0 +1,12 @@
+# course-assistant bundle row.
+# Tunables live here so a profile upgrade never overwrites them:
+#   dataDir      uploads/cache/reports root (default <DSH_HOME>/course-assistant)
+#   concurrency  parallel chapter summaries, 1-5 (default 4)
+#   withVideos   default true; false skips every Bilibili request
+#   provider/model  summary model; omitted = the profile's default model
+- insert:
+    - id: course-assistant
+      name: 'dsh-course-assistant'
+      config:
+        concurrency: 4
+        withVideos: true

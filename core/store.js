@@ -1,0 +1,163 @@
+/**
+ * Local store: uploads, jobs, reports and a small TTL cache.
+ *
+ * Everything stays on this machine: no account data, no database. The default
+ * root is `<DSH_HOME>/course-assistant` (override with the plugin config's
+ * `dataDir`), so a workspace stays clean.
+ */
+import {
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  existsSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { join, extname } from 'node:path'
+import { homedir } from 'node:os'
+
+export function resolveDataDir(configured) {
+  if (configured) return configured
+  const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+  return join(home, 'course-assistant')
+}
+
+function ensure(dir) {
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function atomicWrite(path, text) {
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFileSync(tmp, text, 'utf8')
+  renameSync(tmp, path)
+}
+
+export function createStore(dataDir) {
+  const uploadsDir = ensure(join(dataDir, 'uploads'))
+  const reportsDir = ensure(join(dataDir, 'reports'))
+  const jobsDir = ensure(join(dataDir, 'jobs'))
+  const cachePath = join(dataDir, 'cache.json')
+
+  let cacheData = null
+  const loadCache = () => {
+    if (cacheData) return cacheData
+    try {
+      cacheData = JSON.parse(readFileSync(cachePath, 'utf8'))
+    } catch {
+      cacheData = {}
+    }
+    return cacheData
+  }
+  let saveTimer = null
+  const scheduleSave = () => {
+    if (saveTimer) return
+    saveTimer = setTimeout(() => {
+      saveTimer = null
+      try {
+        atomicWrite(cachePath, JSON.stringify(cacheData || {}))
+      } catch {}
+    }, 500)
+    saveTimer.unref?.()
+  }
+
+  return {
+    dataDir,
+    uploadsDir,
+    reportsDir,
+    jobsDir,
+
+    cache: {
+      async get(key) {
+        const entry = loadCache()[key]
+        if (!entry) return null
+        if (entry.exp && entry.exp < Date.now()) {
+          delete loadCache()[key]
+          scheduleSave()
+          return null
+        }
+        return entry.value
+      },
+      async set(key, value, ttlMs) {
+        loadCache()[key] = { value, exp: ttlMs ? Date.now() + ttlMs : 0 }
+        scheduleSave()
+      },
+      flush() {
+        if (cacheData) {
+          try {
+            atomicWrite(cachePath, JSON.stringify(cacheData))
+          } catch {}
+        }
+      },
+    },
+
+    saveUpload(buf, fileName) {
+      const safeName = String(fileName || 'file').replace(/[\\/:*?"<>|]/g, '_').slice(-120)
+      const hash = createHash('sha256').update(buf).digest('hex').slice(0, 16)
+      const id = `${Date.now().toString(36)}-${hash}`
+      const path = join(uploadsDir, `${id}${extname(safeName).toLowerCase()}`)
+      writeFileSync(path, buf)
+      return { id, name: safeName, path, bytes: buf.length, sha256: hash }
+    },
+
+    saveJob(job) {
+      try {
+        atomicWrite(join(jobsDir, `${job.id}.json`), JSON.stringify(job))
+      } catch {}
+    },
+
+    loadJob(id) {
+      try {
+        return JSON.parse(readFileSync(join(jobsDir, `${id}.json`), 'utf8'))
+      } catch {
+        return null
+      }
+    },
+
+    listJobs(limit = 20) {
+      try {
+        return readdirSync(jobsDir)
+          .filter((n) => n.endsWith('.json'))
+          .map((n) => {
+            const p = join(jobsDir, n)
+            return { id: n.replace(/\.json$/, ''), mtime: statSync(p).mtimeMs }
+          })
+          .sort((a, b) => b.mtime - a.mtime)
+          .slice(0, limit)
+      } catch {
+        return []
+      }
+    },
+
+    writeReport(baseName, markdown) {
+      const safe = String(baseName || 'report').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80)
+      const stem = `${safe}-${new Date().toISOString().slice(0, 10)}`
+      let path = join(reportsDir, `${stem}.md`)
+      let n = 1
+      while (existsSync(path)) path = join(reportsDir, `${stem}-${n++}.md`)
+      writeFileSync(path, markdown, 'utf8')
+      return path
+    },
+
+    writeBytes(path, bytes) {
+      writeFileSync(path, bytes)
+      return path
+    },
+
+    /** Drop uploads older than N days (called opportunistically). */
+    pruneUploads(days = 7) {
+      const cutoff = Date.now() - days * 86400000
+      try {
+        for (const name of readdirSync(uploadsDir)) {
+          const p = join(uploadsDir, name)
+          if (statSync(p).mtimeMs < cutoff) rmSync(p, { force: true })
+        }
+      } catch {}
+    },
+  }
+}
+
+export const newJobId = () => randomUUID().slice(0, 8)
