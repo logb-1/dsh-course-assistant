@@ -59,6 +59,7 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 
 | 改进 | 效果 |
 |---|---|
+| **字形反查**（借鉴 pdf.js 思路） | 字体缺 `/ToUnicode` 时，解析嵌入的 TrueType `cmap` 表并反转成 GID→Unicode，把"字形编号"还原成真字；实测两份 PowerPoint 导出的 PDF：汉字数 0 → 734 / 464，可疑字符 9% → **0%** |
 | 演讲者备注 | 读 `notesSlides`，讲义备注往往是完整讲稿；实测 34 页 PPT 多出约 6 400 字 |
 | 编码还原 | 无 ToUnicode 的字体先按 GBK/Big5 再解一次，能救"GBK 字节被当 Latin-1"的老 PDF |
 | 同名源文件择优 | 同时拖 `x.pptx` 与 `x.pdf` 时自动用 pptx，并提示跳过了哪个 |

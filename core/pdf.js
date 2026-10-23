@@ -283,12 +283,174 @@ const refOf = (v) => {
   return m ? Number(m[1]) : null
 }
 
+/** Match a balanced `<< … >>` starting at `from`; nested dicts are common in /Resources. */
+function matchDict(s, from) {
+  let depth = 0
+  for (let i = from; i < s.length - 1; i += 1) {
+    if (s[i] === '<' && s[i + 1] === '<') {
+      depth += 1
+      i += 1
+    } else if (s[i] === '>' && s[i + 1] === '>') {
+      depth -= 1
+      i += 1
+      if (depth === 0) return s.slice(from, i + 1)
+    }
+  }
+  return null
+}
+
+/**
+ * Read `/Key` whose value is either an inline dict or an indirect reference.
+ * A regex with `<<[\s\S]*?>>` truncates at the first nested dict, which silently
+ * drops every font on pages that carry `/ExtGState <<…>>`.
+ */
+function dictRef(s, key) {
+  const m = new RegExp(`\\/${key}\\s*`).exec(String(s || ''))
+  if (!m) return null
+  const start = m.index + m[0].length
+  if (s.startsWith('<<', start)) {
+    const dict = matchDict(s, start)
+    return dict ? { dict } : null
+  }
+  const ref = /^(\d+)\s+\d+\s+R/.exec(s.slice(start, start + 24))
+  return ref ? { ref: Number(ref[1]) } : null
+}
+
 function dictValue(dict, key) {
   const m = new RegExp(`/${key}\\s*(\\[[^\\]]*\\]|<<[\\s\\S]*?>>|/\\w+|\\d+\\s+\\d+\\s+R|[-\\d.]+)`).exec(dict)
   return m ? m[1] : null
 }
 
 /* -------------------------------- fonts -------------------------------- */
+
+/**
+ * Parse a TrueType `cmap` table and invert it to GID → Unicode.
+ *
+ * Idea borrowed from pdf.js (Apache-2.0): a subset font usually keeps its cmap
+ * even when the PDF forgot /ToUnicode, so the glyph ids shown by Identity-H can
+ * be mapped back to characters. That is the difference between "w\t)Wy°a¼" and
+ * real Chinese text.
+ */
+function parseTtfCmap(buf) {
+  if (!buf || buf.length < 12) return null
+  try {
+    const numTables = buf.readUInt16BE(4)
+    let cmapOff = 0
+    for (let i = 0; i < numTables; i++) {
+      const rec = 12 + i * 16
+      if (rec + 16 > buf.length) break
+      if (buf.toString('ascii', rec, rec + 4) === 'cmap') {
+        cmapOff = buf.readUInt32BE(rec + 8)
+        break
+      }
+    }
+    if (!cmapOff || cmapOff + 4 > buf.length) return null
+    const numSub = buf.readUInt16BE(cmapOff + 2)
+    let best = null
+    for (let i = 0; i < numSub; i++) {
+      const rec = cmapOff + 4 + i * 8
+      if (rec + 8 > buf.length) break
+      const platform = buf.readUInt16BE(rec)
+      const encoding = buf.readUInt16BE(rec + 2)
+      const offset = cmapOff + buf.readUInt32BE(rec + 4)
+      if (offset + 2 > buf.length) continue
+      const format = buf.readUInt16BE(offset)
+      const usable = (platform === 3 && (encoding === 1 || encoding === 10)) || platform === 0
+      if (!usable) continue
+      if (!best || format === 12) best = { offset, format }
+    }
+    if (!best) return null
+    const map = new Map()
+    if (best.format === 4) {
+      const segX2 = buf.readUInt16BE(best.offset + 6)
+      const segs = segX2 / 2
+      const endOff = best.offset + 14
+      const startOff = endOff + segX2 + 2
+      const deltaOff = startOff + segX2
+      const rangeOff = deltaOff + segX2
+      if (rangeOff + segX2 > buf.length) return null
+      for (let s = 0; s < segs; s++) {
+        const end = buf.readUInt16BE(endOff + s * 2)
+        const start = buf.readUInt16BE(startOff + s * 2)
+        const delta = buf.readInt16BE(deltaOff + s * 2)
+        const ro = buf.readUInt16BE(rangeOff + s * 2)
+        for (let code = start; code <= end && code !== 0xffff; code++) {
+          let gid
+          if (ro === 0) {
+            gid = (code + delta) & 0xffff
+          } else {
+            const gi = rangeOff + s * 2 + ro + (code - start) * 2
+            if (gi + 1 >= buf.length) break
+            gid = buf.readUInt16BE(gi)
+            if (gid) gid = (gid + delta) & 0xffff
+          }
+          if (gid) map.set(gid, String.fromCharCode(code))
+        }
+      }
+    } else if (best.format === 12) {
+      const nGroups = buf.readUInt32BE(best.offset + 12)
+      for (let i = 0; i < nGroups; i++) {
+        const off = best.offset + 16 + i * 12
+        if (off + 12 > buf.length) break
+        const startChar = buf.readUInt32BE(off)
+        const endChar = buf.readUInt32BE(off + 4)
+        const startGid = buf.readUInt32BE(off + 8)
+        for (let code = startChar; code <= endChar && code - startChar < 65535; code++) {
+          map.set(startGid + (code - startChar), String.fromCodePoint(code))
+        }
+      }
+    }
+    return map.size ? map : null
+  } catch {
+    return null
+  }
+}
+
+const glyphMapCache = new Map()
+
+/** Type0 fonts keep FontDescriptor / CIDToGIDMap on the descendant CIDFont. */
+function descendantDict(objects, fontObject) {
+  const raw = dictValue(fontObject.dict, 'DescendantFonts')
+  const ref = raw ? refOf((raw.match(/(\d+)\s+\d+\s+R/) || [])[1]) : null
+  const node = ref ? objects.get(ref) : null
+  return node ? node.dict : fontObject.dict
+}
+
+/** GID → Unicode for a font that lost /ToUnicode but embeds its TrueType program. */
+function embeddedGlyphMap(objects, fontObject) {
+  const fontDict = descendantDict(objects, fontObject)
+  const descRef = refOf(dictValue(fontDict, 'FontDescriptor'))
+  if (!descRef) return null
+  const desc = objects.get(descRef)
+  if (!desc) return null
+  const fileRef = refOf(dictValue(desc.dict, 'FontFile2'))
+  if (!fileRef) return null
+  if (glyphMapCache.has(fileRef)) return glyphMapCache.get(fileRef)
+  const program = collectStream(objects, fileRef)
+  const bytes = program ? Buffer.from(program, 'latin1') : null
+  const map = bytes ? parseTtfCmap(bytes) : null
+  glyphMapCache.set(fileRef, map)
+  return map
+}
+
+/** /CIDToGIDMap stream (CID → GID) for subset fonts that remap. */
+function cidToGidMap(objects, fontObject) {
+  const fontDict = descendantDict(objects, fontObject)
+  const ref = refOf(dictValue(fontDict, 'CIDToGIDMap'))
+  if (!ref) return null
+  if (glyphMapCache.has(`cid:${ref}`)) return glyphMapCache.get(`cid:${ref}`)
+  const raw = collectStream(objects, ref)
+  const map = new Map()
+  if (raw) {
+    const bytes = Buffer.from(raw, 'latin1')
+    for (let i = 0; i + 1 < bytes.length; i += 2) {
+      const gid = bytes.readUInt16BE(i)
+      if (gid) map.set(i / 2, gid)
+    }
+  }
+  glyphMapCache.set(`cid:${ref}`, map.size ? map : null)
+  return map.size ? map : null
+}
 
 function parseToUnicode(text) {
   const map = new Map()
@@ -540,16 +702,12 @@ function pageText(objects, page) {
     const r = refOf(contents)
     if (r) refs.push(r)
   }
-  const resources = dictValue(page.dict, 'Resources')
-  let resNum = refOf(resources)
-  let resDict = resources && resources.startsWith('<<') ? resources : null
-  if (resNum) resDict = objects.get(resNum)?.dict ?? null
+  const resNode = dictRef(page.dict, 'Resources')
+  const resDict = resNode?.dict ?? (resNode?.ref ? objects.get(resNode.ref)?.dict : null) ?? null
   const fonts = new Map()
   if (resDict) {
-    const fontDict = dictValue(resDict, 'Font')
-    let fd = fontDict && fontDict.startsWith('<<') ? fontDict : null
-    const fdRef = refOf(fontDict)
-    if (fdRef) fd = objects.get(fdRef)?.dict ?? null
+    const fontNode = dictRef(resDict, 'Font')
+    const fd = fontNode?.dict ?? (fontNode?.ref ? objects.get(fontNode.ref)?.dict : null) ?? null
     if (fd) {
       for (const m of fd.matchAll(/\/([^\s/<>\[\]]+)\s+(\d+)\s+\d+\s+R/g)) {
         const fontObj = objects.get(Number(m[2]))
@@ -566,6 +724,27 @@ function pageText(objects, page) {
             if (parsed.map.size) {
               cmap = parsed.map
               codeBytes = parsed.codeBytes
+            }
+          }
+        }
+        // no /ToUnicode: recover characters from the embedded font's own cmap
+        if (!cmap && (sub === 'Type0' || enc === 'Identity-H')) {
+          const gidMap = embeddedGlyphMap(objects, fontObj)
+          if (gidMap?.size) {
+            const cidMap = cidToGidMap(objects, fontObj)
+            if (cidMap) {
+              const composed = new Map()
+              for (const [cid, gid] of cidMap) {
+                const ch = gidMap.get(gid)
+                if (ch) composed.set(cid, ch)
+              }
+              if (composed.size) {
+                cmap = composed
+                codeBytes = 2
+              }
+            } else {
+              cmap = gidMap
+              codeBytes = 2
             }
           }
         }
