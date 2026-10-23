@@ -146,9 +146,19 @@ pnpm exec playwright test --update-snapshots  # 刷新基线
 
 跳转地址默认 `http://127.0.0.1:54763`，用 `DSH_WEB_URL` 覆盖；GUI 需要 `dsh web` 打印的带 token 地址。
 
-## 安装 / 重载
+### 夜间视觉回归（本机计划任务）
 
-前置条件两条：**装好 DeepSeek Harness**；profile 里**配好一个可用模型**（缺失时会退回本地抽取摘要）。
+CI 里既没有 Host 也没有 token，真面板的 ARIA/截图只能在本机跑：
+
+```powershell
+node tools/nightly-visual.mjs            # 与基线对比
+node tools/nightly-visual.mjs --update   # 刷新基线
+```
+
+token 写在 `<DSH_HOME>/course-assistant/web-token.txt`（第一行是地址栏里 `token=` 的值），
+或设环境变量 `DSH_WEB_TOKEN`；在「任务计划程序」里注册成每天执行即可。仓库里不保存 token。
+
+## 安装 / 重载前置条件两条：**装好 DeepSeek Harness**；profile 里**配好一个可用模型**（缺失时会退回本地抽取摘要）。
 
 ### 装法一：让 Agent 装（最省事，已验证）
 
@@ -302,7 +312,8 @@ course-assistant/
 | Host 路由 | `GET /course-assistant/health` → 200 `{llm:true,pdf:true}`；`upload`→`run`→`job`→`report(md)`→`report(pdf)` 全链路通过（`tools/smoke.mjs`） |
 | Client 槽位 | `main` key `course-assistant` active；`sidebar.panellist` id `course-assistant` active；`conversation.composer.dock` id `course-assistant-dock` active |
 | 语法 | `node --check` 全部通过（index.js / client.js / core/*.js） |
-| 回归 | `node tools/regress.mjs` 共 16 项：`--unit` 8 项（合成 PDF、可信度/证据、单章重跑、同名章）任何机器可跑；`--real` 8 项需要课件；`--strict` 下 unit 缺文件即失败 |
+| 回归 | `node tools/regress.mjs` 共 17 项：`--unit` 9 项（合成 PDF、可信度/证据、单章重跑、同名章、PPTX 节映射）任何机器可跑；`--real` 8 项需要课件；`--strict` 下 unit 缺文件即失败 |
+| CI | `.github/workflows/ci.yml`：Windows + Ubuntu 矩阵跑 `--unit --strict` 与 client 契约测试；package job 校验 tarball 清单（防 `files` 漏文件）与"版本号不许写死" |
 | 解析 | pptx 34 页→10 章；pdf 5 页→11 章；docx 无标题样式→9 章（编号推断）；md→11 章 |
 | 报告 | 三份示例的附录两表均非空；总结合格（≤300 字） |
 | PDF 导出 | 三个样本均生成 PDF，文字层可回读（自写解析器 round-trip） |
