@@ -1,0 +1,6 @@
+{
+  "file": "C:/Users/ThinkPad/Documents/deepseek-harness/default-workspace/关上800美元的小门_课程汇报.pptx",
+  "name": "关上800美元的小门_课程汇报.pptx",
+  "notes": "边界取自这份课件自己的 § 编号（§0 一页摘要 … §9 参考文献），是作者明确划分的章节；封面页并入后允许 ±1 页误差",
+  "boundaries": [1, 2, 4, 5, 7, 10, 12, 16, 25, 30, 32]
+}

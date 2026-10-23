@@ -14,7 +14,7 @@
  * Every assertion encodes a bug we actually hit, so a future change that
  * reintroduces it fails loudly instead of silently degrading a report.
  */
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -27,6 +27,7 @@ import { supportScore, evaluateSummary } from '../core/verify.js'
 import { selectPassages } from '../core/summarize.js'
 import { createStore } from '../core/store.js'
 import { __debug as ooxmlDebug } from '../core/ooxml.js'
+import { boundaryF1, evaluateDoc, windowDiff } from './segment-metrics.mjs'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
 
@@ -135,6 +136,23 @@ real('Markdown：按标题切章', () => {
   const outline = buildOutline([doc])
   assert(outline.chapters.length >= 6, `md 只切出 ${outline.chapters.length} 章`)
   return `${outline.chapters.length} 章`
+})
+
+real('分章质量：gold 集上的 windowdiff 与边界 F1', () => {
+  const dir = join(HERE, 'gold')
+  if (!existsSync(dir)) return 'skip'
+  const rows = []
+  for (const name of readdirSync(dir).filter((n) => n.endsWith('.json'))) {
+    const gold = JSON.parse(readFileSync(join(dir, name), 'utf8'))
+    const target = /^[A-Za-z]:[\\/]/.test(gold.file) ? gold.file : join(dir, gold.file)
+    if (!existsSync(target)) continue
+    const doc = parseFile(target, gold.name || basename(target))
+    const result = evaluateDoc(doc, gold.boundaries)
+    assert(result.windowDiff <= 0.25, `${name} windowdiff ${result.windowDiff} 偏高（>0.25）`)
+    assert(result.f1 >= 0.85, `${name} 边界 F1 ${result.f1} 偏低（<0.85）`)
+    rows.push(`${name}: 章 ${result.chapters}/${result.goldChapters} wd=${result.windowDiff} F1=${result.f1}`)
+  }
+  return rows.length ? rows.join('；') : 'skip'
 })
 
 /* ---------------------------------- unit ---------------------------------- */
@@ -331,6 +349,29 @@ check('导出：Anki CSV 与 course.json 结构', () => {
   assert(json.chapters[0].keyPoints[0].page === 3, 'course.json 丢了页码')
   assert(json.chapters[0].keyPoints[0].evidence.length > 0, 'course.json 丢了引文')
   return 'CSV 1 张卡 + course.json'
+})
+
+check('PDF 字号：cm 缩放要乘进有效字号', () => {
+  const ops = ['q 2 0 0 2 0 0 cm', textOp(50, 700, 'SCALED HEADING LINE'), 'Q', textOp(50, 600, 'NORMAL BODY TEXT HERE')]
+  const doc = parsePdf(makePdf(ops), 'scaled.pdf')
+  const size = doc.pages[0].heading?.size || 0
+  assert(size >= 20, `缩放后的字号是 ${size}，应约为 24`)
+  return `heading=${size}`
+})
+
+check('分章指标：windowdiff 与边界 F1 的已知用例', () => {
+  const ref = [true, false, false, true, false, false, true, false]
+  const same = boundaryF1(ref, ref)
+  assert(same.f1 === 1, `完全一致应 F1=1，实际 ${same.f1}`)
+  assert(windowDiff(ref, ref) === 0, '完全一致应 windowdiff=0')
+  const shifted = ref.map((flag, i) => (i === 1 ? true : i === 3 ? false : flag))
+  const tolerant = boundaryF1(ref, shifted, 2)
+  assert(tolerant.f1 >= 0.9, `容差内应基本满分，实际 ${tolerant.f1}`)
+  const wrong = [true, false, false, false, true, false, false, true]
+  const f1 = boundaryF1(ref, wrong, 0)
+  assert(f1.f1 < 0.5, `边界错位应低分，实际 ${f1.f1}`)
+  assert(windowDiff(ref, wrong) > 0, '错位应 windowdiff>0')
+  return `same=${same.f1} shifted=${tolerant.f1} wrong=${f1.f1}`
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

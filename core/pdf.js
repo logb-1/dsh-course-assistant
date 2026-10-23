@@ -577,18 +577,36 @@ function contentToText(content, fonts) {
   let leading = 0
   let lastEndX = null
   const stack = []
+  let ctm = [1, 0, 0, 1, 0, 0]
+  let tm = [1, 0, 0, 1, 0, 0]
+  const gstack = []
+  const det = (m) => m[0] * m[3] - m[1] * m[2]
+  /** Effective glyph size: Tf × |det(Tm × CTM)|^0.5 (Tz affects width only). */
+  const effectiveSize = () => {
+    const scale = Math.sqrt(Math.abs(det(tm) * det(ctm)))
+    return scale > 0.01 && Number.isFinite(scale) ? fontSize * scale : fontSize
+  }
+  const compose = (a, b) => [
+    a[0] * b[0] + a[1] * b[2],
+    a[0] * b[1] + a[1] * b[3],
+    a[2] * b[0] + a[3] * b[2],
+    a[2] * b[1] + a[3] * b[3],
+    a[4] * b[0] + a[5] * b[2] + b[4],
+    a[4] * b[1] + a[5] * b[3] + b[5],
+  ]
   const width = (t) => {
+    const size = effectiveSize()
     let w = 0
-    for (const ch of t) w += /[\u2e80-\u9fff\uff00-\uffef]/.test(ch) ? fontSize : fontSize * 0.5
+    for (const ch of t) w += /[\u2e80-\u9fff\uff00-\uffef]/.test(ch) ? size : size * 0.5
     return w
   }
   // glyph-level PDFs jitter the baseline by a fraction of a point; only a move
   // of roughly half a line really is a new line.
-  const dyLimit = () => Math.max(2, fontSize * 0.55)
+  const dyLimit = () => Math.max(2, effectiveSize() * 0.55)
   // a gap wider than ~3 em is a column break, not a word space: keep the pieces
   // apart so the column detector can see them (they are re-joined when the page
   // turns out to be single-column)
-  const gapLimit = () => fontSize * 3
+  const gapLimit = () => effectiveSize() * 3
   const pushFrag = () => {
     if (fragText.trim()) frags.push({ text: fragText, x0: fragX0 ?? 0, x1: fragX1 ?? fragX0 ?? 0 })
     fragText = ''
@@ -622,13 +640,13 @@ function contentToText(content, fonts) {
       fragX0 = x
       if (!frags.length && !fragText) {
         lineY = y
-        lineSize = fontSize
+        lineSize = effectiveSize()
         lineFont = font?.baseFont || ''
       }
     } else if (lastEndX !== null && x - lastEndX > gapLimit()) {
       pushFrag()
       fragX0 = x
-    } else if (lastEndX !== null && x - lastEndX > fontSize * 0.25) {
+    } else if (lastEndX !== null && x - lastEndX > effectiveSize() * 0.25) {
       // a real x gap means a word break; glyph-by-glyph PDFs must not get spaces
       fragText += ' '
     }
@@ -665,8 +683,15 @@ function contentToText(content, fonts) {
     } else if (op === 'TJ') {
       for (const p of stack) {
         if (p.type === 'string') show(p.value)
-        else if (p.type === 'number') x += (-p.value / 1000) * fontSize
+        else if (p.type === 'number') x += (-p.value / 1000) * effectiveSize()
       }
+    } else if (op === 'q') {
+      gstack.push([...ctm])
+    } else if (op === 'Q') {
+      ctm = gstack.pop() || [1, 0, 0, 1, 0, 0]
+    } else if (op === 'cm') {
+      const nums = stack.filter((t) => t.type === 'number').map((t) => t.value)
+      if (nums.length >= 6) ctm = compose(ctm, nums.slice(0, 6))
     } else if (op === 'Td' || op === 'TD') {
       const nums = stack.filter((t) => t.type === 'number').map((t) => t.value)
       if (nums.length >= 2) {
@@ -684,6 +709,7 @@ function contentToText(content, fonts) {
       const nums = stack.filter((t) => t.type === 'number').map((t) => t.value)
       if (nums.length >= 6) {
         if (prevY !== null && Math.abs(nums[5] - prevY) > dyLimit()) newline()
+        tm = nums.slice(0, 6)
         x = nums[4]
         y = nums[5]
         prevY = nums[5]
@@ -698,6 +724,7 @@ function contentToText(content, fonts) {
     } else if (op === 'BT') {
       x = 0
       y = 0
+      tm = [1, 0, 0, 1, 0, 0]
       freshBT = true
     }
     stack.length = 0

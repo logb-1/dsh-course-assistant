@@ -109,6 +109,13 @@ OCR 结果按内容哈希缓存（`<dataDir>/ocr/<sha>.json`），重跑命中�
 **同名章节不再重复**：页眉重复时只在标题变化处开新章；相邻同名章合并；
 非相邻同名章追加页码区间（`第 1 章 甲（p7–9）`），不再出现"（续）"。
 
+**字号按 CTM 折算**：有效字号 = `Tf × √|det(Tm × CTM)|`，`q/Q`/`cm` 维护图形状态栈。
+用 `cm` 整体缩放的 PDF 不会被误判成"字很小"（`Tz` 只影响宽度，不参与字号）。
+
+**分章质量可量化**：`tools/gold/*.json` 存人工/作者标注的章边界，
+`tools/segment-metrics.mjs` 算 windowdiff 与 ±1 页容差的边界 F1；`--real` 组会跑 gold 集，
+当前 `deck-800` 的 windowdiff 0.061、F1 0.947。
+
 **修掉一个长期的静默 bug**：`summarizeChapter` 之前只拿到章节元数据，**正文从未传给模型**
 （模型一直在只看标题写要点）。1.4.0 起正文显式传入，prompt 版本升到 v5。
 
@@ -312,8 +319,9 @@ course-assistant/
 | Host 路由 | `GET /course-assistant/health` → 200 `{llm:true,pdf:true}`；`upload`→`run`→`job`→`report(md)`→`report(pdf)` 全链路通过（`tools/smoke.mjs`） |
 | Client 槽位 | `main` key `course-assistant` active；`sidebar.panellist` id `course-assistant` active；`conversation.composer.dock` id `course-assistant-dock` active |
 | 语法 | `node --check` 全部通过（index.js / client.js / core/*.js） |
-| 回归 | `node tools/regress.mjs` 共 17 项：`--unit` 9 项（合成 PDF、可信度/证据、单章重跑、同名章、PPTX 节映射）任何机器可跑；`--real` 8 项需要课件；`--strict` 下 unit 缺文件即失败 |
+| 回归 | `node tools/regress.mjs` 共 22 项：`--unit` 13 项（合成 PDF、可信度/证据、CTM 字号、分章指标、单章重跑、同名章、PPTX 节映射、导出结构）任何机器可跑；`--real` 9 项需要课件；`--strict` 下 unit 缺文件即失败 |
 | CI | `.github/workflows/ci.yml`：Windows + Ubuntu 矩阵跑 `--unit --strict` 与 client 契约测试；package job 校验 tarball 清单（防 `files` 漏文件）与"版本号不许写死" |
+| 分章质量 | `tools/gold/*.json` + `tools/segment-metrics.mjs`（windowdiff / 边界 F1，±1 页容差）；`deck-800`：章 10/11、windowdiff **0.061**、F1 **0.947** |
 | 解析 | pptx 34 页→10 章；pdf 5 页→11 章；docx 无标题样式→9 章（编号推断）；md→11 章 |
 | 报告 | 三份示例的附录两表均非空；总结合格（≤300 字） |
 | PDF 导出 | 三个样本均生成 PDF，文字层可回读（自写解析器 round-trip） |
