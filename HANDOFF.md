@@ -1,0 +1,66 @@
+# HANDOFF — 课程助手插件（dsh-course-assistant）
+
+> 写于 2026-10-23，上下文接近上限时落盘。新会话直接读这份文件即可继续，不需要翻聊天记录。
+
+## 一、当前状态
+
+| 项 | 值 |
+|---|---|
+| 本地版本 | **1.2.0**（`package.json`，已装进 desktop profile，`health` 返回 1.2.0） |
+| 安装形态 | `link:` 指向 `C:\Users\ThinkPad\Documents\deepseek-harness\default-workspace\course-assistant` |
+| npm | 已发布 **1.1.1**；**1.2.0 未发布**（本地已验证，只差 `pnpm publish`） |
+| GitHub | 仓库 `logb-1/dsh-course-assistant`，远端停在 `4f9db4a3`（README 安装四法）；本地领先 2 个提交（`b3f1038`、`3692263`）→ **分支已分叉**，需 `git fetch origin && git rebase origin/main` |
+| 槽位 | `main` key `course-assistant`、`sidebar.panellist` id `course-assistant`、`composer.dock` id `course-assistant-dock`，均 active |
+
+## 二、1.2.0 已完成并验证
+
+1. **质量闸门** `core/quality.js`：每页字数 / 可疑字符率 / 空页率 / 成词率 → `good|fair|unusable`；报告头部与面板都显示，unusable 时加警告块。
+2. **OCR 重读** `core/ocr.js` + `core/ocr.ps1`：WinRT 渲染 + Windows OCR(zh-CN)，~1s/页，默认上限 60 页；`health.ocr` 报可用性；仅 Windows。
+3. **领域锚定** `core/domain.js`：从代码特征识别语言（L12 → C++ score 40），关键词改写（`Python 异常处理` → `C++ 异常处理`）、查询加域前缀、排序丢弃跨语言结果（Java/Python 视频不再进 C++ 课）。
+4. **字形反查** `core/pdf.js`：字体缺 `/ToUnicode` 时解析嵌入 TrueType 的 `cmap` 并反转 GID→Unicode。效果：L10 汉字 0 → **734**，L12 0 → **464**，可疑字符 9% → **0%**。
+5. **演讲者备注** `core/ooxml.js`：读 `notesSlides`，34 页 PPT 多出约 6 400 字。
+6. **编码还原** `core/pdf.js`：无 cmap 的字体按 GBK/Big5 再解一次（`TextDecoder`，已验证可用）。
+7. **同名源文件择优** `core/pipeline.js`：同时拖 `x.pptx` + `x.pdf` 时自动用 pptx 并提示。
+8. **要点重合计分** `core/verify.js`：bigram 重合度 < 30% 标「可能有推断成分」，报告里加备注。
+9. 配置项：`domain`（强制领域）、`ocrMaxPages`（OCR 上限），写在 `cordis.patch.yml` 注释里。
+
+## 三、待办（按优先级）
+
+1. **GitHub 同步**：网络恢复后 `git fetch origin && git rebase origin/main && git push`；或改用 GitHub API 把 `package.json` / `index.js` / `core/*.js` / `README.md` 一次性提交（之前用过这套流程）。
+2. **发 npm 1.2.0**：`pnpm publish --access public --no-git-checks`（`.npmrc` 里已有 granular token，`whoami`=logb-1）。`files` 已包含 `core/ocr.ps1`，`pnpm pack` 验证过 21 个文件。
+3. **L12 切章**：54 页讲义只切出 1 章。原因是页标题是「幻灯片 3: 10.1 异常处理」这种混合串。做法：幻灯片型 PDF 走「一页一节 + 按 `10.x` 编号归章」，30 行左右。
+4. **`.ppt/.doc` 旧格式**：`officeToPdf.convert({extension:'ppt'})` → PDF → 现有解析器，约 40 行。
+5. **多模态（未接）**：宿主接口已具备（`attachments.saveImage` → `ImageAttachmentRef`，`llm.stream` 支持 image block），但 profile 只有 `deepseek-flash`（纯文本）。需先在 Settings 加视觉模型（qwen-vl / gpt-4o / gemini），或本地 Ollama。
+6. **awesome-dsh-plugin PR**：本会话设了 2026-10-24 14:29 的提醒（仓库需满 1 天）；**提醒绑定本会话**，若换新会话需手动执行。条目 YAML 在 `C:\Users\ThinkPad\Desktop\awesome-dsh-plugin_提交条目.yml`。
+
+## 四、关键命令
+
+```powershell
+# 改代码后必须重载（2 次调用，Host 才会重新 import）
+#   plugin_manager remove_bundle  target=dsh-course-assistant
+#   plugin_manager install_bundle target=C:\Users\ThinkPad\Documents\deepseek-harness\default-workspace\course-assistant
+# 验证
+Invoke-RestMethod http://127.0.0.1:54763/course-assistant/health
+# 端到端（HTTP 路由，输出 5 行）
+node tools/smoke.mjs "课件.pptx"
+# 打包检查
+node <pnpm> pack --pack-destination ..   # 确认 core/ocr.ps1 在内
+```
+
+## 五、踩过的坑（别再踩）
+
+1. **`/Resources` 是嵌套字典**：`<<[\s\S]*?>>` 会在 `/ExtGState <<…>>` 处截断，导致字体资源全丢——必须括号配平（`matchDict`）。这是字形反查一开始"无效"的真正原因。
+2. **Type0 字体的 FontDescriptor 在后代字体**（`/DescendantFonts`）上，不在字体对象上。
+3. **pnpm 不转发 `--otp`**；npm CLI 转发也需 6 位 TOTP（8 位无效）。发布必须用带 bypass-2FA 的 granular token。
+4. **npm 有 staged publish**：首次发布会留 `0.0.0-stage` 占位包；重复发布会报 `Cannot publish over previously staged version`，改版本号可绕过。
+5. **PowerShell 5.1 读 .ps1 按 ANSI**：脚本里不要写中文；写文件用 `write`/`edit` 工具，别用 `Get-Content | Set-Content` 往返（会写坏 UTF-8）。
+6. **`git checkout`/`reset --hard` 会覆盖工作区改动**：先确认有没有未提交内容。
+7. **OCR 的 Windows OCR 对公式/数字必错**（`2.3`→`23`、`0.95`→`0．95`），只能用于正文；幻灯片大字效果尚可。
+8. **`.git` 曾被掏空过一次**（只剩 objects/refs），恢复方式：`git init` + `remote add` + `fetch` + `reset --mixed origin/main`。
+
+## 六、数据与产物位置
+
+- 报告/上传/缓存：`C:\Users\ThinkPad\.dsh\course-assistant\{reports,uploads,jobs,cache.json}`
+- 示例报告：`course-assistant/samples/`（已 gitignore，含个人课件内容，不发布）
+- 小红书文案：工作区 `xhs-drafts.json` + `xhs-check.mjs`（校验脚本）
+- 精简版提示词 + PDF：桌面 `课程助手插件_提示词_精简版.md/.pdf`
