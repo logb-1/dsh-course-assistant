@@ -27,6 +27,7 @@ import { supportScore, evaluateSummary } from '../core/verify.js'
 import { selectPassages } from '../core/summarize.js'
 import { createStore } from '../core/store.js'
 import { __debug as ooxmlDebug } from '../core/ooxml.js'
+import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
 
 const ARGV = process.argv.slice(2)
@@ -299,6 +300,37 @@ check('长章节：中间的关键段落不会被截断丢掉', () => {
   assert(kept.includes('富有弹性'), '弹性大小段被丢掉了')
   assert(kept.includes('交叉弹性'), '交叉弹性段被丢掉了')
   return `${body.length} → ${kept.length} 字，3/3 关键段保留`
+})
+
+check('导出：Anki CSV 与 course.json 结构', () => {
+  const job = {
+    courseTitle: '微观经济学',
+    files: [{ name: 'a.md' }],
+    chapters: [
+      {
+        index: 1,
+        title: '第一章 供给与需求',
+        pages: [1, 2],
+        confidence: { tier: 'verified' },
+        summary: {
+          keywords: ['需求'],
+          key_points: [{ text: '需求定律：价格上升需求量下降', evidence: '价格上升会使需求量下降', page: 3 }],
+          important: [],
+          difficult: [],
+        },
+      },
+    ],
+  }
+  const csv = buildAnkiCsv(job)
+  assert(csv.split('\r\n').filter(Boolean).length === 2, `CSV 行数不对：${csv}`)
+  assert(csv.includes('"需求定律：价格上升需求量下降"'), 'CSV 缺少正面')
+  assert(csv.includes('p.3'), 'CSV 缺少页码')
+  assert(csv.includes('原文：价格上升会使需求量下降'), 'CSV 缺少引文')
+  const json = JSON.parse(buildCourseJson(job))
+  assert(json.schema === 'dsh-course-assistant/course@1', `schema 不对：${json.schema}`)
+  assert(json.chapters[0].keyPoints[0].page === 3, 'course.json 丢了页码')
+  assert(json.chapters[0].keyPoints[0].evidence.length > 0, 'course.json 丢了引文')
+  return 'CSV 1 张卡 + course.json'
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

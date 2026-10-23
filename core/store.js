@@ -205,6 +205,32 @@ export function createStore(dataDir) {
       }
     },
 
+    /** Remove a job record and, when given, the report files it produced. */
+    deleteJob(id, job = null) {
+      try {
+        rmSync(join(jobsDir, `${id}.json`), { force: true })
+      } catch {}
+      if (job) {
+        for (const file of [job.reportPath, job.pdfPath]) {
+          if (!file) continue
+          try {
+            rmSync(file, { force: true })
+          } catch {}
+        }
+      }
+    },
+
+    /** Reports are the deliverable: keep them for a while, not forever. */
+    pruneReports(days = 90) {
+      const cutoff = Date.now() - days * 86400000
+      try {
+        for (const name of readdirSync(reportsDir)) {
+          const file = join(reportsDir, name)
+          if (statSync(file).mtimeMs < cutoff) rmSync(file, { force: true })
+        }
+      } catch {}
+    },
+
     listJobs(limit = 20) {
       try {
         return readdirSync(jobsDir)

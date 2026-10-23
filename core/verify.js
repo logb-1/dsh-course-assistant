@@ -177,16 +177,18 @@ export function evaluateSummary(chapterText, summary) {
 }
 
 /** One-line explanation for the report; never asserts fabrication. */
-export function describeConfidence(confidence, { paged = false } = {}) {
-  if (!confidence || confidence.tier === 'verified' || confidence.tier === 'unrated') return ''
+export function describeConfidence(confidence) {
+  // only a real problem earns a line in the report; "weak" is a panel badge and
+  // would otherwise add a note to almost every paraphrased chapter
+  if (!confidence || confidence.tier !== 'suspect') return ''
   const pct = (v) => `${Math.round(v * 100)}%`
   const parts = []
   const ev = confidence.evidence || {}
-  if (confidence.tier === 'suspect' && ev.checked) {
+  if (ev.checked) {
     parts.push(`证据核对：${ev.checked} 条要点带引文，${ev.exact + ev.fuzzy} 条能在原文中找到（${ev.missing} 条找不到）`)
   }
-  if (confidence.overlap !== null && confidence.overlap < THRESHOLDS.overlap.weak) {
-    parts.push(`词面重合 ${pct(confidence.overlap)}：要点多为改写，建议对照原${paged ? '页' : '文'}`)
+  if (confidence.overlap !== null && confidence.overlap < THRESHOLDS.overlap.suspect) {
+    parts.push(`词面重合 ${pct(confidence.overlap)}：要点多为改写，建议对照原页`)
   }
   if (confidence.reasons.includes('model_marked_unsupported')) {
     parts.push(`模型自评：部分要点在原文中找不到依据（${pct(confidence.faithfulness ?? 0)} 条有依据）`)

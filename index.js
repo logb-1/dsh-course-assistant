@@ -20,6 +20,7 @@ import { createStore, resolveDataDir } from './core/store.js'
 import { createBiliClient } from './core/bili.js'
 import { runPipeline, rerunChapter } from './core/pipeline.js'
 import { ocrAvailable, ocrStatus } from './core/ocr.js'
+import { pointText } from './core/verify.js'
 import { markdownToDocx } from './core/docx.js'
 import { SUPPORTED } from './core/parser.js'
 
@@ -63,6 +64,54 @@ const STALE_MS = 90_000
 const BOOT_ID = randomUUID()
 const text = (s) => [{ type: 'text', text: s }]
 
+const csvCell = (value) => `"${String(value ?? '').replace(/\r/g, '').replace(/"/g, '""')}"`
+
+/** Anki: one card per key point, back side carries the chapter, page and quote. */
+export function buildAnkiCsv(job) {
+  const rows = [['front', 'back', 'tags'].map(csvCell).join(',')]
+  const tags = `课程助手 ${job.courseTitle || ''}`.trim()
+  for (const chapter of job.chapters || []) {
+    for (const point of chapter.summary?.key_points || []) {
+      const front = pointText(point)
+      if (!front) continue
+      const page = point.page ? `（p.${point.page}）` : ''
+      const evidence = point.evidence ? `\n原文：${point.evidence}` : ''
+      rows.push([csvCell(front), csvCell(`${chapter.title}${page}${evidence}`), csvCell(tags)].join(','))
+    }
+  }
+  // BOM so Excel on Windows reads it as UTF-8; Anki ignores it
+  return `\uFEFF${rows.join('\r\n')}\r\n`
+}
+
+/** Interop document other plugins can read without parsing the markdown report. */
+export function buildCourseJson(job) {
+  return JSON.stringify(
+    {
+      schema: 'dsh-course-assistant/course@1',
+      generatedAt: new Date().toISOString(),
+      courseTitle: job.courseTitle || '',
+      files: (job.files || []).map((f) => f.name),
+      domain: job.domain || null,
+      chapters: (job.chapters || []).map((c) => ({
+        index: c.index,
+        title: c.title,
+        pages: c.pages || [],
+        keywords: c.summary?.keywords || [],
+        confidence: c.confidence?.tier || null,
+        keyPoints: (c.summary?.key_points || []).map((p) => ({
+          text: pointText(p),
+          page: p?.page ?? null,
+          evidence: p?.evidence || '',
+        })),
+        important: c.summary?.important || [],
+        difficult: c.summary?.difficult || [],
+      })),
+    },
+    null,
+    2,
+  )
+}
+
 function readBody(req, limit = MAX_UPLOAD) {
   return new Promise((resolve, reject) => {
     const chunks = []
@@ -99,6 +148,7 @@ export function apply(ctx, config = {}) {
   const store = createStore(resolveDataDir(config.dataDir))
   store.pruneUploads(config.keepUploadsDays ?? 7)
   try {
+    store.pruneReports(90)
     store.cache.prune(500)
   } catch {}
   const bili = createBiliClient({
@@ -480,11 +530,30 @@ export function apply(ctx, config = {}) {
         return send(res, 200, { ok: true, job: { ...rest, hasReport: !!job.reportPath } })
       }
 
+      if (path === `${ROUTE}/job` && req.method === 'DELETE') {
+        const id = url.searchParams.get('id')
+        if (!id) return send(res, 400, { ok: false, reason: '缺少 id' })
+        const job = jobs.get(id) || store.loadJob(id)
+        if (!job) return send(res, 404, { ok: false, reason: '任务不存在' })
+        stopHeartbeat(id)
+        jobs.delete(id)
+        jobInputs.delete(id)
+        store.deleteJob(id, url.searchParams.get('withReport') === '1' ? job : null)
+        return send(res, 200, { ok: true, deleted: id })
+      }
+
       if (path === `${ROUTE}/report` && req.method === 'GET') {
         const id = url.searchParams.get('id')
         const format = (url.searchParams.get('format') || 'md').toLowerCase()
         const job = jobs.get(id) || (id && store.loadJob(id))
         if (!job) return send(res, 404, { ok: false, reason: '任务不存在' })
+        if (format === 'csv' || format === 'json') {
+          const body = format === 'csv' ? buildAnkiCsv(job) : buildCourseJson(job)
+          return send(res, 200, body, {
+            'content-type': format === 'csv' ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8',
+            'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(`${job.courseTitle || job.id}.${format}`)}`,
+          })
+        }
         let markdown = job.markdown
         if (!markdown && job.reportPath && existsSync(job.reportPath)) markdown = readFileSync(job.reportPath, 'utf8')
         if (!markdown) return send(res, 404, { ok: false, reason: '报告尚未生成' })

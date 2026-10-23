@@ -70,7 +70,7 @@ export function applyAssessment({ summary, chapter, text, warnings }) {
   summary.faithfulness = confidence.faithfulness
   // legacy aliases kept for older clients and saved jobs
   summary.support = confidence.overlap
-  summary.lowConfidence = confidence.tier === 'suspect' || confidence.tier === 'weak'
+  summary.lowConfidence = confidence.tier === 'suspect'
   if (chapter) {
     // the caller used to set these two; keep them here so every path agrees
     chapter.summary = summary
@@ -79,7 +79,7 @@ export function applyAssessment({ summary, chapter, text, warnings }) {
     chapter.support = confidence.overlap
   }
   if (summary.lowConfidence) {
-    const detail = describeConfidence(confidence, { paged: true })
+    const detail = describeConfidence(confidence)
     warnings.push(`第 ${chapter?.index ?? '?'} 章可信度偏低${detail ? `：${detail}` : ''}`)
   }
   return confidence
