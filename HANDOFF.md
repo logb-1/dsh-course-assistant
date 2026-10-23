@@ -112,7 +112,9 @@ node <pnpm> pack --pack-destination ..   # 确认 core/ocr.ps1 在内
    写在 `chapter.diff`，面板在章节下方显示 `+ / −` 与新增关键词。
 4. **G 视觉回归** `tests/visual.spec.mjs` + `playwright.config.mjs`：`channel: 'msedge'` 用系统 Edge，不下载 Chromium；
    打开面板、断言标题/拖拽区/主按钮 disabled，再对 `.ca-root` 做基线截图（`maxDiffPixelRatio: 0.02`）。
-5. **回归脚本** 12 项全绿（新增：单章差异、双栏、单栏）。`node --check` 全过。
+5. **回归脚本** 13 项全绿（新增：单章差异、单章重跑端到端（无模型，含报告重建与其他章节不变）、双栏、单栏）。`node --check` 全过。
+6. **线上验证**（走 HTTP 路由，真模型）：上传 3 章 md → `/run` → done；`/rerun {chapterIndex:2}` → done，
+   `diff = +1 −3`，`rerunOf` 指向原任务，其余两章要点逐字未变，报告重建（`hasReport: true`）。
 
 **踩坑（第 9 节新增）**：
 
