@@ -2,87 +2,107 @@
 /**
  * Regression checks over the real files that broke this plugin.
  *
- *   node tools/regress.mjs            # all checks
- *   node tools/regress.mjs --quiet    # failures only
+ *   node tools/regress.mjs                 # everything available
+ *   node tools/regress.mjs --unit          # synthetic only (any machine, no fixtures)
+ *   node tools/regress.mjs --unit --strict # a skipped unit test fails the run (CI)
+ *   node tools/regress.mjs --real          # only checks that need courseware
+ *
+ * Fixtures resolve from CA_FIXTURES, then tools/fixtures/, then the Desktop
+ * paths this project grew up with. Missing courseware is a skip, never a silent
+ * pass; `--strict` turns unit skips into failures.
  *
  * Every assertion encodes a bug we actually hit, so a future change that
  * reintroduces it fails loudly instead of silently degrading a report.
  */
-import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseFile } from '../core/parser.js'
 import { parsePdf } from '../core/pdf.js'
 import { buildOutline } from '../core/outline.js'
 import { assessQuality } from '../core/quality.js'
 import { detectDomain } from '../core/domain.js'
-import { supportScore } from '../core/verify.js'
+import { supportScore, evaluateSummary } from '../core/verify.js'
 import { createStore } from '../core/store.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
 
-const QUIET = process.argv.includes('--quiet')
-const DESKTOP = 'C:\\Users\\ThinkPad\\Desktop'
-const WORKSPACE = 'C:\\Users\\ThinkPad\\Documents\\deepseek-harness\\default-workspace'
+const ARGV = process.argv.slice(2)
+const QUIET = ARGV.includes('--quiet')
+const STRICT = ARGV.includes('--strict')
+const ONLY_UNIT = ARGV.includes('--unit')
+const ONLY_REAL = ARGV.includes('--real')
+
+const HERE = join(fileURLToPath(new URL('.', import.meta.url)))
+const FIXTURES = process.env.CA_FIXTURES || join(HERE, 'fixtures')
+const DESKTOP = process.env.CA_DESKTOP || 'C:\\Users\\ThinkPad\\Desktop'
+const WORKSPACE = process.env.CA_WORKSPACE || 'C:\\Users\\ThinkPad\\Documents\\deepseek-harness\\default-workspace'
 
 const checks = []
-const check = (name, fn) => checks.push({ name, fn })
+const check = (name, fn, group = 'unit') => checks.push({ name, fn, group })
+const real = (name, fn) => check(name, fn, 'real')
 const assert = (cond, message) => {
   if (!cond) throw new Error(message)
 }
 const cjkCount = (text) => (String(text).match(/[\u4e00-\u9fff]/g) || []).length
+const pick = (...paths) => paths.find((p) => p && existsSync(p)) || ''
 
 const FILES = {
-  L10: `${DESKTOP}\\L10_C08_多态与虚函数.pdf`,
-  L12: `${DESKTOP}\\L12_C10_异常与断言.pdf`,
-  deck: `${WORKSPACE}\\关上800美元的小门_课程汇报.pptx`,
-  docx: `${WORKSPACE}\\关上800美元的小门_数据与模型出处说明.docx`,
-  md: `${DESKTOP}\\计算机系统基础 复习&自学大纲.md`,
+  L10: pick(join(FIXTURES, 'L10_C08_多态与虚函数.pdf'), join(DESKTOP, 'L10_C08_多态与虚函数.pdf')),
+  L12: pick(join(FIXTURES, 'L12_C10_异常与断言.pdf'), join(DESKTOP, 'L12_C10_异常与断言.pdf')),
+  deck: pick(join(FIXTURES, '关上800美元的小门_课程汇报.pptx'), join(WORKSPACE, '关上800美元的小门_课程汇报.pptx')),
+  docx: pick(join(FIXTURES, '关上800美元的小门_数据与模型出处说明.docx'), join(WORKSPACE, '关上800美元的小门_数据与模型出处说明.docx')),
+  md: pick(join(FIXTURES, '计算机系统基础 复习&自学大纲.md'), join(DESKTOP, '计算机系统基础 复习&自学大纲.md')),
 }
 
-check('PDF 字形反查：PowerPoint 导出的 PDF 能读出中文', () => {
-  if (!existsSync(FILES.L10)) return 'skip'
+/* ------------------------------ real courseware ------------------------------ */
+
+real('PDF 字形反查：PowerPoint 导出的 PDF 能读出中文', () => {
+  if (!FILES.L10) return 'skip'
   const doc = parseFile(FILES.L10, basename(FILES.L10))
   const cjk = cjkCount(doc.pages.map((p) => p.text).join('\n'))
   assert(cjk >= 500, `L10 汉字只有 ${cjk}（应 ≥500，字形反查失效？）`)
   return `L10 cjk=${cjk}`
 })
 
-check('PDF 字形反查：第二份导出件同样可读', () => {
-  if (!existsSync(FILES.L12)) return 'skip'
+real('PDF 字形反查：第二份导出件同样可读', () => {
+  if (!FILES.L12) return 'skip'
   const doc = parseFile(FILES.L12, basename(FILES.L12))
   const cjk = cjkCount(doc.pages.map((p) => p.text).join('\n'))
   assert(cjk >= 300, `L12 汉字只有 ${cjk}（应 ≥300）`)
   return `L12 cjk=${cjk}`
 })
 
-check('质量闸门：乱码 PDF 不该被判为 good', () => {
-  if (!existsSync(FILES.L12)) return 'skip'
+real('质量闸门：乱码 PDF 不该被判为 good', () => {
+  if (!FILES.L12) return 'skip'
   const doc = parseFile(FILES.L12, basename(FILES.L12))
   const q = assessQuality([doc])
   assert(q.tier !== 'good', `L12 判成了 ${q.tier}，可疑字符率 ${q.metrics.noiseRatio}`)
   return `${q.tier} noise=${q.metrics.noiseRatio}`
 })
 
-check('领域锚定：C++ 课件识别为 C++', () => {
-  if (!existsSync(FILES.L12)) return 'skip'
+real('领域锚定：C++ 课件识别为 C++', () => {
+  if (!FILES.L12) return 'skip'
   const doc = parseFile(FILES.L12, basename(FILES.L12))
   const domain = detectDomain([doc])
   assert(domain?.name === 'C++', `识别为 ${domain?.name || 'null'}，应为 C++`)
   return `${domain.name} score=${domain.score}`
 })
 
-check('切章：幻灯片型 PDF 不再塌成 1 章', () => {
+real('切章：幻灯片型 PDF 不再塌成 1 章', () => {
+  let ran = 0
   for (const key of ['L10', 'L12']) {
-    if (!existsSync(FILES[key])) continue
+    if (!FILES[key]) continue
+    ran += 1
     const doc = parseFile(FILES[key], basename(FILES[key]))
     const outline = buildOutline([doc])
     assert(outline.chapters.length >= 3, `${key} 只切出 ${outline.chapters.length} 章（应 ≥3）`)
   }
-  return 'L10/L12 ≥3 章'
+  return ran ? 'L10/L12 ≥3 章' : 'skip'
 })
 
-check('PPTX：演讲者备注被读入', () => {
-  if (!existsSync(FILES.deck)) return 'skip'
+real('PPTX：演讲者备注被读入', () => {
+  if (!FILES.deck) return 'skip'
   const doc = parseFile(FILES.deck, basename(FILES.deck))
   const withNotes = doc.pages.filter((p) => p.notes).length
   assert(withNotes >= 1, '没有任何演讲者备注')
@@ -91,25 +111,30 @@ check('PPTX：演讲者备注被读入', () => {
   return `${doc.pages.length} 页, ${withNotes} 页有备注, ${chars} 字`
 })
 
-check('PPTX/DOCX 切章数量稳定', () => {
-  if (existsSync(FILES.deck)) {
+real('PPTX/DOCX 切章数量稳定', () => {
+  let ran = 0
+  if (FILES.deck) {
+    ran += 1
     const deck = buildOutline([parseFile(FILES.deck, basename(FILES.deck))])
     assert(deck.chapters.length >= 8 && deck.chapters.length <= 14, `deck 切出 ${deck.chapters.length} 章`)
   }
-  if (existsSync(FILES.docx)) {
+  if (FILES.docx) {
+    ran += 1
     const doc = buildOutline([parseFile(FILES.docx, basename(FILES.docx))])
     assert(doc.chapters.length >= 5, `docx 只切出 ${doc.chapters.length} 章`)
   }
-  return 'deck 8–14 章, docx ≥5 章'
+  return ran ? 'deck 8–14 章, docx ≥5 章' : 'skip'
 })
 
-check('Markdown：按标题切章', () => {
-  if (!existsSync(FILES.md)) return 'skip'
+real('Markdown：按标题切章', () => {
+  if (!FILES.md) return 'skip'
   const doc = parseFile(FILES.md, basename(FILES.md))
   const outline = buildOutline([doc])
   assert(outline.chapters.length >= 6, `md 只切出 ${outline.chapters.length} 章`)
   return `${outline.chapters.length} 章`
 })
+
+/* ---------------------------------- unit ---------------------------------- */
 
 check('可信度：原文要点高重合、编造内容低重合', () => {
   const text = '正式制度包括法律、产权与契约安排。非正式制度包括惯例、文化与行业规范。'
@@ -120,6 +145,31 @@ check('可信度：原文要点高重合、编造内容低重合', () => {
   return `good=${good} bad=${bad}`
 })
 
+check('可信度：空文本不再得满分（null 语义）', () => {
+  assert(supportScore('', ['任意要点']) === null, '空原文应返回 null，不能是 1')
+  assert(supportScore('有原文', []) === null, '没有要点应返回 null')
+  const c = evaluateSummary('', { key_points: [{ text: '甲', evidence: '' }] })
+  assert(c.tier === 'unrated' || c.tier === 'suspect', `空原文判成了 ${c.tier}`)
+  return 'null → unrated'
+})
+
+check('证据机检：引文能命中原文才算有依据', () => {
+  const text = '需求价格弹性等于需求量变化百分比除以价格变化百分比，弹性大于一称为富有弹性。'
+  const exact = evaluateSummary(text, {
+    key_points: [{ text: '弹性大于一称为富有弹性', evidence: '弹性大于一称为富有弹性' }],
+  })
+  assert(exact.evidence.exact === 1, `exact 未命中：${JSON.stringify(exact.evidence)}`)
+  assert(exact.tier === 'verified', `应判 verified，实际 ${exact.tier}`)
+  const fake = evaluateSummary(text, {
+    key_points: [{ text: '完全竞争市场的四个条件', evidence: '完全竞争市场有大量买者与卖者并且产品同质' }],
+  })
+  assert(fake.evidence.missing === 1 || fake.evidence.short === 1, `伪造引文未被识别：${JSON.stringify(fake.evidence)}`)
+  assert(fake.tier !== 'verified', '伪造引文应降级')
+  const short = evaluateSummary(text, { key_points: [{ text: '弹性', evidence: '弹性' }] })
+  assert(short.evidence.short === 1, '过短引文应标 short')
+  return `exact=${exact.tier} fake=${fake.tier}`
+})
+
 check('章节重跑差异：只报新增/删除的要点', () => {
   const before = { key_points: ['A', 'B'], important: ['C'], difficult: [], keywords: ['x'] }
   const after = { key_points: ['B', 'D'], important: ['C'], difficult: [], keywords: ['x', 'y'] }
@@ -128,7 +178,6 @@ check('章节重跑差异：只报新增/删除的要点', () => {
   assert(diff.removed.length === 1 && diff.removed[0].text === 'A', `删除判错：${JSON.stringify(diff.removed)}`)
   assert(diff.keywordsAdded.length === 1 && diff.keywordsAdded[0] === 'y', `关键词新增判错：${JSON.stringify(diff.keywordsAdded)}`)
   assert(diff.changed === true, '应标记为有变化')
-  // a rerun that produces the same bullets must not look like a change
   const same = diffSummary(before, { ...before })
   assert(same.added.length === 0 && same.removed.length === 0 && same.changed === false, '相同内容被判成有变化')
   return `+${diff.added.length} −${diff.removed.length}, 相同内容无差异`
@@ -155,6 +204,9 @@ check('单章重跑：只换这一章，其他章节与报告保持一致', asyn
     const base = await runPipeline({ id: 'base', inputs, options: { withVideos: false }, deps, emit: () => {} })
     assert(base.status === 'done', `首跑失败：${base.error || base.status}`)
     assert(base.chapters.length >= 3, `只切出 ${base.chapters.length} 章`)
+    assert(base.inputs?.length === 1, 'manifest 没有记录输入')
+    assert(base.outline?.boundaries?.length === base.chapters.length, 'manifest 没有锁住分章边界')
+    assert(base.schemaVersion === 2, `schemaVersion 应为 2，实际 ${base.schemaVersion}`)
     const rerun = await rerunChapter({
       id: 'rerun',
       inputs,
@@ -170,6 +222,7 @@ check('单章重跑：只换这一章，其他章节与报告保持一致', asyn
     assert(target?.rerunAt, '目标章没有 rerunAt')
     assert(target?.diff, '目标章没有 diff')
     assert(target.diff.changed === false, '本地兜底是确定性的，重跑不该有差异')
+    assert(target?.confidence, '重跑章节缺少可信度评估')
     const untouched = (job) => JSON.stringify(job.chapters.filter((c) => c.index !== 2))
     assert(untouched(rerun) === untouched(base), '其他章节被改动了')
     assert(rerun.reportPath && existsSync(rerun.reportPath), '报告没有重建')
@@ -201,7 +254,6 @@ function makePdf(ops) {
 const textOp = (x, y, text) => `BT /F1 12 Tf ${x} ${y} Td (${text}) Tj ET`
 
 check('列检测：双栏 PDF 按栏读，不串行', () => {
-  // drawn left-right-left-right, the way a two-column paper stores its stream
   const ops = [textOp(50, 730, 'TITLE OF THE WHOLE PAGE THAT REALLY SPANS BOTH COLUMNS WIDE')]
   const order = []
   for (let i = 1; i <= 5; i += 1) {
@@ -236,15 +288,30 @@ check('列检测：单栏 PDF 保持原顺序', () => {
   return '9 行原序'
 })
 
+/* --------------------------------- runner --------------------------------- */
+
+const selected = checks.filter(({ group }) => (ONLY_UNIT ? group === 'unit' : ONLY_REAL ? group === 'real' : true))
 let failed = 0
-for (const { name, fn } of checks) {
+let skipped = 0
+
+for (const { name, fn, group } of selected) {
   try {
     const note = await fn()
+    if (note === 'skip') {
+      skipped += 1
+      const strictFail = STRICT && group === 'unit'
+      if (strictFail) failed += 1
+      if (!QUIET) console.log(`${strictFail ? 'FAIL' : 'SKIP'}  ${name}  (缺少课件文件)`)
+      continue
+    }
     if (!QUIET) console.log(`PASS  ${name}${note ? `  —  ${note}` : ''}`)
   } catch (error) {
     failed += 1
     console.log(`FAIL  ${name}\n      ${error.message}`)
   }
 }
-console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
+
+const passed = selected.length - failed - skipped
+const summary = `${passed} pass / ${skipped} skip / ${failed} fail`
+console.log(QUIET && !failed ? summary : `\n${failed ? `${summary}（${failed} 项失败）` : `全部通过（${summary}）`}`)
 process.exit(failed ? 1 : 0)
