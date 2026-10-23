@@ -173,16 +173,19 @@ course-assistant/
 
 ## 与社区同类插件的区别
 
-发布前查过 DSH 社区（`awesome-dsh-plugin`、dshbase、npm `dsh-plugin` 检索）：
+发布前查过 DSH 社区（`awesome-dsh-plugin` 榜单、dshbase、npm `dsh-plugin` 检索）。相邻项目不少，按接近程度排列：
 
 | 现有项目 | 它做什么 | 与本插件的区别 |
 |---|---|---|
-| [chenw2759-wq/dsh-mindmap](https://github.com/chenw2759-wq/dsh-mindmap) | 课件(PPT/PDF/Word)+电子书 → 打印级复习思维导图 HTML | 输入侧重叠；输出是思维导图，不做 B 站网课推荐，也不出分章 Markdown 报告 |
+| [linner1224/dsh-video-coursemap](https://github.com/linner1224/dsh-video-coursemap) | 观察浏览器前台窗口识别视频课程，抓 B 站简介/字幕/弹幕/评论，生成 Markdown + Mermaid 知识地图与 Word 手册 | 同样接 B 站，但输入是「正在看的视频」；本插件输入是**课件文件**，产出是分章报告 + 网课推荐附录 |
+| [aix-plugin/ai-courses](https://github.com/aix-plugin/ai-courses) | 学习诉求 + 手头资料 → 结构化 AI 课程（大纲、知识点、图表、进度） | 目标最近（资料→大纲+知识点），但它建的是长期课程库；本插件只出一次性报告，且**附录强制给 B 站网课** |
+| [Ame-Choo/dsh-study-coach](https://github.com/Ame-Choo/dsh-study-coach) | 把一门课拆成知识地图，逐单元记六档掌握度，每日任务 + 错题本 | 偏长期学习管理；本插件偏「一次读透一份课件」 |
+| [Kaiji-Z/dsh-plugin-lookatstudy](https://github.com/Kaiji-Z/dsh-plugin-lookatstudy) | markdown 文件 / 本地文件夹 / GitHub 仓库 → 导学课程（课时解锁、间隔重复） | 输入是文本与仓库，不含 pptx/pdf/docx 解析；无网课检索 |
+| [chenw2759-wq/dsh-mindmap](https://github.com/chenw2759-wq/dsh-mindmap) | 课件(PPT/PDF/Word) + 电子书 → 打印级复习思维导图 HTML | 输入侧重叠；输出是思维导图，不做网课推荐、不出分章 Markdown/PDF 报告 |
 | [@eduwork/dsh-knowledge-studio](https://www.npmjs.com/package/@eduwork/dsh-knowledge-studio) | ECNU 的「知识工作室」：文档/学习/音视频/思维导图一体 | 大而全的工作台（3MB+、多依赖）；本插件是零依赖的单点工具 |
 | `dsh-file-upload` / `@iamroven/dsh-web-file-upload` | 只提供 Web 端文件上传能力 | 本插件自带上传，重点是「课件 → 目录 → 分章总结 → 网课」链路 |
-| [BiliNote](https://github.com/JefferyHcool/BiliNote)（非 DSH） | B 站视频 → AI 笔记 | 方向相反：视频转笔记，而非课件找网课 |
 
-没有找到「课件 → 目录 + 分章知识点/重难点 + B 站网课 + Markdown/PDF 报告」的端到端同款。
+没有找到「课件文件 → 目录 + 分章知识点/重难点 + B 站网课推荐附录 + Markdown/PDF 报告」这一条完整链路的同款。
 
 ## GitHub 调研（第 0 步）
 
