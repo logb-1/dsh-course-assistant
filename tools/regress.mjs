@@ -8,15 +8,17 @@
  * Every assertion encodes a bug we actually hit, so a future change that
  * reintroduces it fails loudly instead of silently degrading a report.
  */
-import { readFileSync, existsSync } from 'node:fs'
-import { basename } from 'node:path'
+import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
 import { parseFile } from '../core/parser.js'
 import { parsePdf } from '../core/pdf.js'
 import { buildOutline } from '../core/outline.js'
 import { assessQuality } from '../core/quality.js'
 import { detectDomain } from '../core/domain.js'
 import { supportScore } from '../core/verify.js'
-import { diffSummary } from '../core/pipeline.js'
+import { createStore } from '../core/store.js'
+import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
 
 const QUIET = process.argv.includes('--quiet')
 const DESKTOP = 'C:\\Users\\ThinkPad\\Desktop'
@@ -132,6 +134,52 @@ check('章节重跑差异：只报新增/删除的要点', () => {
   return `+${diff.added.length} −${diff.removed.length}, 相同内容无差异`
 })
 
+check('单章重跑：只换这一章，其他章节与报告保持一致', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ca-regress-'))
+  try {
+    const store = createStore(dir)
+    const filler = (sentence, times) => Array.from({ length: times }, () => sentence).join('')
+    const body = [
+      '# 微观经济学',
+      '## 第一章 供给与需求',
+      filler('需求量随价格上升而下降，供给量随价格上升而增加。均衡价格由两条曲线的交点决定。', 8),
+      '## 第二章 弹性',
+      filler('需求价格弹性等于需求量变化百分比除以价格变化百分比。弹性大于一称为富有弹性，小于一称为缺乏弹性。', 8),
+      '## 第三章 市场结构',
+      filler('完全竞争市场有大量卖者、同质产品与自由进出。垄断市场只有一个卖者，并且存在明显的进入壁垒。', 8),
+    ].join('\n\n')
+    const file = join(dir, 'course.md')
+    writeFileSync(file, body, 'utf8')
+    const inputs = [{ path: file, name: 'course.md' }]
+    const deps = { store, bili: null, llm: null }
+    const base = await runPipeline({ id: 'base', inputs, options: { withVideos: false }, deps, emit: () => {} })
+    assert(base.status === 'done', `首跑失败：${base.error || base.status}`)
+    assert(base.chapters.length >= 3, `只切出 ${base.chapters.length} 章`)
+    const rerun = await rerunChapter({
+      id: 'rerun',
+      inputs,
+      previous: base,
+      chapterIndex: 2,
+      options: { withVideos: false },
+      deps,
+      emit: () => {},
+    })
+    assert(rerun.status === 'done', `重跑失败：${rerun.error || rerun.status}`)
+    assert(rerun.chapters.length === base.chapters.length, `章节数变了：${rerun.chapters.length} ≠ ${base.chapters.length}`)
+    const target = rerun.chapters.find((c) => c.index === 2)
+    assert(target?.rerunAt, '目标章没有 rerunAt')
+    assert(target?.diff, '目标章没有 diff')
+    assert(target.diff.changed === false, '本地兜底是确定性的，重跑不该有差异')
+    const untouched = (job) => JSON.stringify(job.chapters.filter((c) => c.index !== 2))
+    assert(untouched(rerun) === untouched(base), '其他章节被改动了')
+    assert(rerun.reportPath && existsSync(rerun.reportPath), '报告没有重建')
+    assert(rerun.rerunOf === base.id, 'rerunOf 没记原任务')
+    return `${base.chapters.length} 章，第 2 章重跑，其余不变`
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */
 
 function makePdf(ops) {
@@ -191,7 +239,7 @@ check('列检测：单栏 PDF 保持原顺序', () => {
 let failed = 0
 for (const { name, fn } of checks) {
   try {
-    const note = fn()
+    const note = await fn()
     if (!QUIET) console.log(`PASS  ${name}${note ? `  —  ${note}` : ''}`)
   } catch (error) {
     failed += 1
