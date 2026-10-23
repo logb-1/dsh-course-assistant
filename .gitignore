@@ -12,3 +12,6 @@ pnpm-lock.yaml
 # playwright output (the baseline snapshots under tests/ ARE committed)
 test-results/
 playwright-report/
+# nightly runner token (never committed)
+.nightly-token
+*.tgz

@@ -65,6 +65,53 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 | 同名源文件择优 | 同时拖 `x.pptx` 与 `x.pdf` 时自动用 pptx，并提示跳过了哪个 |
 | 要点重合计分 | 每章要点与原文算 bigram 重合度，低于 30% 标「可能有推断成分」 |
 
+## 1.4.0 新增：有依据的要点、可续跑的流程、可校验的配置
+
+**每条要点必须带原文引文，并由本地核对（`core/verify.js`）**——模型不再"自评可信度"，而是给出
+`evidence`（原文连续片段），插件把它和章节原文做归一化（NFKC / 去空白标点 / 全半角）后比对：
+
+| 判定 | 含义 |
+|---|---|
+| `exact` | 引文是原文子串 |
+| `fuzzy` | 4-gram 覆盖率 ≥ 0.85（标点/空格被改写的引文） |
+| `short` | 归一化后不足 10 字，算不了一次有效核对 |
+| `missing` | 找不到 |
+
+由 `evaluateSummary()` 收敛成三档 `verified / weak / suspect` + 原因码；报告、面板、warnings
+读同一个对象，**文案只陈述测量值**（"词面重合 34%：要点多为改写"、"5 条引文 2 条找不到"），
+不再用词面重合度推断"编造"。空原文的 `supportScore` 从原来的 `1` 改为 `null`（没有原文不该满分）。
+
+**manifest + 重启可重跑**：每个 job 落盘 `inputs`（相对路径 + sha256 + uploadId）、
+`outline.boundaries`（分章边界 + hash）、`ocr`（引擎/页数）与 `schemaVersion`。
+重启后 `/rerun` 从 manifest 恢复输入，按锁定的边界取原文——**改分章算法不会给旧任务重新编号**。
+OCR 结果按内容哈希缓存（`<dataDir>/ocr/<sha>.json`），重跑命中缓存、不会再跑一遍 OCR。
+
+**心跳与僵尸任务**：运行中的 job 每 15 秒续一次 `heartbeatAt`，并记 `owner{pid,hostname}`。
+启动时扫描：心跳超过 90 秒且同主机进程已不存在 → 标 `interrupted`（面板不再空转轮询）。
+
+**Config 进设置页**：`export const Config`（Schemastery）声明 11 个字段，激活时校验，
+`Config.listConfigs` 从 `absent` 变成 `schema`。配置非法直接 fail loud，不会半配置启动。
+字段与优先级（请求 > 配置 > 默认）：
+
+| 字段 | 默认 | 约束 |
+|---|---|---|
+| `dataDir` | 空（`<DSH_HOME>/course-assistant`） | 路径 |
+| `concurrency` | 4 | 1–5 |
+| `withVideos` | true | 布尔 |
+| `domain` | 空（自动识别） | 字符串 |
+| `ocrMaxPages` | 60 | 1–400 |
+| `ocrEngine` | 空（自动） | `windows` / `rapidocr` |
+| `ocrPython` | 空 | python 路径 |
+| `provider` / `model` | 空（跟随默认模型） | 字符串 |
+| `spacingMs` | 1000 | 1000–60000 |
+| `keepUploadsDays` | 7 | 1–90 |
+
+**同名章节不再重复**：页眉重复时只在标题变化处开新章；相邻同名章合并；
+非相邻同名章追加页码区间（`第 1 章 甲（p7–9）`），不再出现"（续）"。
+
+**修掉一个长期的静默 bug**：`summarizeChapter` 之前只拿到章节元数据，**正文从未传给模型**
+（模型一直在只看标题写要点）。1.4.0 起正文显式传入，prompt 版本升到 v5。
+
 ## 1.3.0 新增：可换的 OCR、双栏阅读顺序、单章重跑
 
 **OCR 引擎抽象**：`core/ocr.js` 变成注册表，引擎只需实现
@@ -99,9 +146,19 @@ pnpm exec playwright test --update-snapshots  # 刷新基线
 
 跳转地址默认 `http://127.0.0.1:54763`，用 `DSH_WEB_URL` 覆盖；GUI 需要 `dsh web` 打印的带 token 地址。
 
-## 安装 / 重载
+### 夜间视觉回归（本机计划任务）
 
-前置条件两条：**装好 DeepSeek Harness**；profile 里**配好一个可用模型**（缺失时会退回本地抽取摘要）。
+CI 里既没有 Host 也没有 token，真面板的 ARIA/截图只能在本机跑：
+
+```powershell
+node tools/nightly-visual.mjs            # 与基线对比
+node tools/nightly-visual.mjs --update   # 刷新基线
+```
+
+token 写在 `<DSH_HOME>/course-assistant/web-token.txt`（第一行是地址栏里 `token=` 的值），
+或设环境变量 `DSH_WEB_TOKEN`；在「任务计划程序」里注册成每天执行即可。仓库里不保存 token。
+
+## 安装 / 重载前置条件两条：**装好 DeepSeek Harness**；profile 里**配好一个可用模型**（缺失时会退回本地抽取摘要）。
 
 ### 装法一：让 Agent 装（最省事，已验证）
 
@@ -151,6 +208,9 @@ install_bundle(target="github:logb-1/dsh-course-assistant")
 
 ## 配置（`cordis.patch.yml` 的同名列）
 
+1.4.0 起这些字段由导出的 `Config`（Schemastery）校验，并在设置页可见；**优先级统一为
+请求参数 > 配置文件 > 内置默认**。
+
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `dataDir` | `<DSH_HOME>/course-assistant` | 上传/缓存/报告根目录 |
@@ -158,9 +218,11 @@ install_bundle(target="github:logb-1/dsh-course-assistant")
 | `withVideos` | `true` | 全局关闭 B 站检索 |
 | `provider` / `model` | profile 默认模型 | 覆盖总结模型（默认取 `agentDefaultModel`） |
 | `domain` | 自动识别 | 强制课程领域，如 `C++`；用于代码特征太碎、识别不出的文件 |
-| `ocrMaxPages` | `60` | OCR 重读的页数上限 |
-| `spacingMs` | `1000` | B 站请求间隔 |
-| `keepUploadsDays` | `7` | 上传文件保留天数 |
+| `ocrMaxPages` | `60` | OCR 重读的页数上限（1–400） |
+| `ocrEngine` | 自动 | `windows` / `rapidocr` |
+| `ocrPython` | `python` / `python3` | rapidocr 用的解释器 |
+| `spacingMs` | `1000` | B 站请求间隔（≥1000） |
+| `keepUploadsDays` | `7` | 上传文件保留天数（1–90），仍被任务引用的不会被删 |
 
 ## 依赖
 
@@ -250,7 +312,8 @@ course-assistant/
 | Host 路由 | `GET /course-assistant/health` → 200 `{llm:true,pdf:true}`；`upload`→`run`→`job`→`report(md)`→`report(pdf)` 全链路通过（`tools/smoke.mjs`） |
 | Client 槽位 | `main` key `course-assistant` active；`sidebar.panellist` id `course-assistant` active；`conversation.composer.dock` id `course-assistant-dock` active |
 | 语法 | `node --check` 全部通过（index.js / client.js / core/*.js） |
-| 回归 | `node tools/regress.mjs` 12 项断言全绿（含双栏重排、单栏不变、单章差异） |
+| 回归 | `node tools/regress.mjs` 共 17 项：`--unit` 9 项（合成 PDF、可信度/证据、单章重跑、同名章、PPTX 节映射）任何机器可跑；`--real` 8 项需要课件；`--strict` 下 unit 缺文件即失败 |
+| CI | `.github/workflows/ci.yml`：Windows + Ubuntu 矩阵跑 `--unit --strict` 与 client 契约测试；package job 校验 tarball 清单（防 `files` 漏文件）与"版本号不许写死" |
 | 解析 | pptx 34 页→10 章；pdf 5 页→11 章；docx 无标题样式→9 章（编号推断）；md→11 章 |
 | 报告 | 三份示例的附录两表均非空；总结合格（≤300 字） |
 | PDF 导出 | 三个样本均生成 PDF，文字层可回读（自写解析器 round-trip） |

@@ -12,20 +12,105 @@
  */
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { hostname } from 'node:os'
+import { basename, isAbsolute, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import Schema from 'schemastery'
 import { createStore, resolveDataDir } from './core/store.js'
 import { createBiliClient } from './core/bili.js'
 import { runPipeline, rerunChapter } from './core/pipeline.js'
 import { ocrAvailable, ocrStatus } from './core/ocr.js'
+import { pointText } from './core/verify.js'
 import { markdownToDocx } from './core/docx.js'
 import { SUPPORTED } from './core/parser.js'
+
+const HERE = join(fileURLToPath(new URL('.', import.meta.url)))
+const PKG = (() => {
+  try {
+    return JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8'))
+  } catch {
+    return { version: '0.0.0' }
+  }
+})()
 
 export const name = 'course-assistant'
 export const inject = ['tools', 'webServer']
 
+/**
+ * Every knob the panel and the tool read, validated at activation. A bad value
+ * fails the plugin loudly instead of starting half-configured.
+ * Precedence for every field: request option > this config > built-in default.
+ */
+export const Config = Schema.object({
+  dataDir: Schema.string().default('').description('上传/缓存/报告目录，留空用 <DSH_HOME>/course-assistant'),
+  concurrency: Schema.natural().min(1).max(5).default(4).description('并行章节数'),
+  withVideos: Schema.boolean().default(true).description('默认是否检索 B 站网课'),
+  domain: Schema.string().default('').description('强制课程领域（如 C++），留空自动识别'),
+  ocrMaxPages: Schema.natural().min(1).max(400).default(60).description('OCR 重读页数上限'),
+  ocrEngine: Schema.union([Schema.const(''), Schema.const('windows'), Schema.const('rapidocr')])
+    .default('')
+    .description('OCR 引擎，留空自动选择'),
+  ocrPython: Schema.string().default('').description('rapidocr 用的 python 可执行文件'),
+  provider: Schema.string().default('').description('摘要模型 provider，留空跟随默认模型'),
+  model: Schema.string().default('').description('摘要模型名，留空跟随默认模型'),
+  spacingMs: Schema.natural().min(1000).max(60000).default(1000).description('B 站请求间隔（毫秒）'),
+  keepUploadsDays: Schema.natural().min(1).max(90).default(7).description('上传文件保留天数'),
+})
+
 const ROUTE = '/course-assistant'
 const MAX_UPLOAD = 60 * 1024 * 1024
+const HEARTBEAT_MS = 15_000
+const STALE_MS = 90_000
+const BOOT_ID = randomUUID()
 const text = (s) => [{ type: 'text', text: s }]
+
+const csvCell = (value) => `"${String(value ?? '').replace(/\r/g, '').replace(/"/g, '""')}"`
+
+/** Anki: one card per key point, back side carries the chapter, page and quote. */
+export function buildAnkiCsv(job) {
+  const rows = [['front', 'back', 'tags'].map(csvCell).join(',')]
+  const tags = `课程助手 ${job.courseTitle || ''}`.trim()
+  for (const chapter of job.chapters || []) {
+    for (const point of chapter.summary?.key_points || []) {
+      const front = pointText(point)
+      if (!front) continue
+      const page = point.page ? `（p.${point.page}）` : ''
+      const evidence = point.evidence ? `\n原文：${point.evidence}` : ''
+      rows.push([csvCell(front), csvCell(`${chapter.title}${page}${evidence}`), csvCell(tags)].join(','))
+    }
+  }
+  // BOM so Excel on Windows reads it as UTF-8; Anki ignores it
+  return `\uFEFF${rows.join('\r\n')}\r\n`
+}
+
+/** Interop document other plugins can read without parsing the markdown report. */
+export function buildCourseJson(job) {
+  return JSON.stringify(
+    {
+      schema: 'dsh-course-assistant/course@1',
+      generatedAt: new Date().toISOString(),
+      courseTitle: job.courseTitle || '',
+      files: (job.files || []).map((f) => f.name),
+      domain: job.domain || null,
+      chapters: (job.chapters || []).map((c) => ({
+        index: c.index,
+        title: c.title,
+        pages: c.pages || [],
+        keywords: c.summary?.keywords || [],
+        confidence: c.confidence?.tier || null,
+        keyPoints: (c.summary?.key_points || []).map((p) => ({
+          text: pointText(p),
+          page: p?.page ?? null,
+          evidence: p?.evidence || '',
+        })),
+        important: c.summary?.important || [],
+        difficult: c.summary?.difficult || [],
+      })),
+    },
+    null,
+    2,
+  )
+}
 
 function readBody(req, limit = MAX_UPLOAD) {
   return new Promise((resolve, reject) => {
@@ -62,6 +147,10 @@ function send(res, code, body, headers = {}) {
 export function apply(ctx, config = {}) {
   const store = createStore(resolveDataDir(config.dataDir))
   store.pruneUploads(config.keepUploadsDays ?? 7)
+  try {
+    store.pruneReports(90)
+    store.cache.prune(500)
+  } catch {}
   const bili = createBiliClient({
     cache: store.cache,
     spacingMs: Number(config.spacingMs) || 1000,
@@ -72,21 +161,23 @@ export function apply(ctx, config = {}) {
   const uploads = new Map()
   const disposers = []
 
+  const pick = (value) => (value === '' || value == null ? undefined : value)
+  // precedence is the same for every field: request option > config > default
   const optionsOf = (raw = {}) => ({
     withVideos: raw.withVideos !== false && config.withVideos !== false,
     concurrency: Math.max(1, Math.min(5, Number(raw.concurrency) || Number(config.concurrency) || 4)),
     ocr: raw.ocr === true,
     ocrMaxPages: Number(raw.ocrMaxPages) || Number(config.ocrMaxPages) || 60,
-    ocrEngine: raw.ocrEngine || config.ocrEngine || undefined,
-    ocrPython: raw.ocrPython || config.ocrPython || undefined,
-    domain: config.domain || raw.domain || undefined,
+    ocrEngine: pick(raw.ocrEngine) || pick(config.ocrEngine),
+    ocrPython: pick(raw.ocrPython) || pick(config.ocrPython),
+    domain: pick(raw.domain) || pick(config.domain),
   })
 
   function resolveLlm() {
     const svc = ctx.get('llm')
     if (!svc) return null
-    let provider = config.provider
-    let model = config.model
+    let provider = pick(config.provider)
+    let model = pick(config.model)
     if (!provider || !model) {
       try {
         const sel = ctx.get('agentDefaultModel')?.currentSelection?.()
@@ -140,6 +231,85 @@ export function apply(ctx, config = {}) {
     return prepared
   }
 
+  /* ------------------------ heartbeat + zombie reaper ------------------------ */
+
+  const heartbeats = new Map()
+
+  const stopHeartbeat = (id) => {
+    const timer = heartbeats.get(id)
+    if (timer) clearInterval(timer)
+    heartbeats.delete(id)
+  }
+
+  /**
+   * A single chapter can run longer than a minute, so the beat cannot ride on
+   * push(): an independent timer renews it. `owner` lets a second Host instance
+   * on the same machine check pid liveness instead of declaring a false death.
+   */
+  const startHeartbeat = (id) => {
+    stopHeartbeat(id)
+    // stamp immediately: a crash inside the first interval must still look recent
+    const seedJob = jobs.get(id)
+    if (seedJob) {
+      seedJob.heartbeatAt = Date.now()
+      seedJob.owner = { pid: process.pid, hostname: hostname(), bootId: BOOT_ID }
+    }
+    const timer = setInterval(() => {
+      const job = jobs.get(id)
+      if (!job || job.status !== 'running') return stopHeartbeat(id)
+      job.heartbeatAt = Date.now()
+      job.owner = { pid: process.pid, hostname: hostname(), bootId: BOOT_ID }
+      try {
+        store.saveJob(job)
+      } catch {}
+    }, HEARTBEAT_MS)
+    timer.unref?.()
+    heartbeats.set(id, timer)
+  }
+
+  const finishJob = (id, job) => {
+    jobs.set(id, job)
+    stopHeartbeat(id)
+  }
+
+  /** Jobs left `running` by a dead process must not poll forever. */
+  function reapZombies() {
+    const now = Date.now()
+    let reaped = 0
+    for (const { id } of store.listJobs(300)) {
+      if (jobs.has(id)) continue
+      let job
+      try {
+        job = store.loadJob(id)
+      } catch {
+        continue
+      }
+      if (!job || job.status !== 'running') continue
+      const beat = Number(job.heartbeatAt || 0) || Date.parse(job.createdAt || '') || 0
+      if (now - beat <= STALE_MS) continue
+      const owner = job.owner
+      if (owner?.hostname === hostname() && Number.isInteger(owner.pid)) {
+        let alive = false
+        try {
+          process.kill(owner.pid, 0)
+          alive = true
+        } catch {}
+        if (alive) continue
+      }
+      const dead = {
+        ...job,
+        status: 'interrupted',
+        phase: 'interrupted',
+        error: '进程重启，任务已中断（可重新运行）',
+        interruptedAt: new Date().toISOString(),
+      }
+      jobs.set(id, dead)
+      store.saveJob(dead)
+      reaped += 1
+    }
+    return reaped
+  }
+
   async function makeJob(inputs, options) {
     const prepared = await prepareInputs(inputs)
     inputs = prepared
@@ -158,6 +328,8 @@ export function apply(ctx, config = {}) {
     }
     jobs.set(id, job)
     jobInputs.set(id, inputs)
+    store.touchUploads(inputs.map((f) => f.uploadId).filter(Boolean))
+    startHeartbeat(id)
     const llm = resolveLlm()
     runPipeline({
       id,
@@ -169,12 +341,17 @@ export function apply(ctx, config = {}) {
       },
     })
       .then((final) => {
-        jobs.set(id, final)
+        finishJob(id, final)
       })
       .catch((error) => {
-        const failed = { ...(jobs.get(id) || job), status: 'error', phase: 'error', error: String(error?.message || error), progress: 1 }
-        jobs.set(id, failed)
-        store.saveJob(failed)
+        finishJob(id, {
+          ...(jobs.get(id) || job),
+          status: 'error',
+          phase: 'error',
+          error: String(error?.message || error),
+          progress: 1,
+        })
+        store.saveJob(jobs.get(id))
         ctx.logger?.warn?.(`[course-assistant] job ${id} failed: ${error?.stack || error}`)
       })
     return job
@@ -198,6 +375,8 @@ export function apply(ctx, config = {}) {
     }
     jobs.set(id, seed)
     jobInputs.set(id, inputs)
+    store.touchUploads(inputs.map((f) => f.uploadId).filter(Boolean))
+    startHeartbeat(id)
     rerunChapter({
       id,
       inputs,
@@ -208,15 +387,37 @@ export function apply(ctx, config = {}) {
       emit: (next) => jobs.set(id, next),
     })
       .then((final) => {
-        jobs.set(id, final)
+        finishJob(id, final)
       })
       .catch((error) => {
-        const failed = { ...seed, status: 'error', phase: 'error', error: String(error?.message || error), progress: 1 }
-        jobs.set(id, failed)
-        store.saveJob(failed)
+        finishJob(id, { ...seed, status: 'error', phase: 'error', error: String(error?.message || error), progress: 1 })
+        store.saveJob(jobs.get(id))
         ctx.logger?.warn?.(`[course-assistant] rerun ${id} failed: ${error?.stack || error}`)
       })
     return seed
+  }
+
+  /**
+   * Recover the inputs of a job after a restart: the in-memory map is gone, but
+   * job.inputs carries dataDir-relative paths. A pruned upload is reported by
+   * name (410), never as a generic "task not found".
+   */
+  function restoreInputs(jobId) {
+    const previous = jobs.get(jobId) || store.loadJob(jobId)
+    const rows = previous?.inputs
+    if (!Array.isArray(rows) || !rows.length) return { error: '原任务缺少输入清单（旧版本任务），请重新拖入文件' }
+    const inputs = []
+    for (const row of rows) {
+      const path = isAbsolute(row.path) ? row.path : join(store.dataDir, row.path)
+      if (!existsSync(path)) {
+        return {
+          error: `上传文件已过期（保留 ${config.keepUploadsDays ?? 7} 天）：${row.name}，请重新拖入`,
+          missing: row.name,
+        }
+      }
+      inputs.push({ path, name: row.name, uploadId: row.uploadId })
+    }
+    return { inputs, previous }
   }
 
   async function exportPdf(job) {
@@ -253,7 +454,7 @@ export function apply(ctx, config = {}) {
       if (path === `${ROUTE}/health`) {
         return send(res, 200, {
           ok: true,
-          version: '1.3.0',
+          version: PKG.version,
           llm: !!resolveLlm(),
           pdf: !!ctx.get('officeToPdf')?.convert,
           ocr: ocrAvailable(),
@@ -290,7 +491,7 @@ export function apply(ctx, config = {}) {
           if (!saved || !existsSync(saved.path)) {
             return send(res, 400, { ok: false, reason: `上传文件已失效：${id}` })
           }
-          inputs.push({ path: saved.path, name: saved.name })
+          inputs.push({ path: saved.path, name: saved.name, uploadId: saved.id })
         }
         if (inputs.length > 12) return send(res, 400, { ok: false, reason: '一次最多处理 12 个文件' })
         const job = await makeJob(inputs, optionsOf(body.options))
@@ -299,8 +500,16 @@ export function apply(ctx, config = {}) {
 
       if (path === `${ROUTE}/rerun` && req.method === 'POST') {
         const body = JSON.parse((await readBody(req, 256 * 1024)).toString('utf8') || '{}')
-        const inputs = jobInputs.get(body.jobId)
-        if (!inputs?.length) return send(res, 404, { ok: false, reason: '原任务的上传文件已失效，请重新拖入文件' })
+        let inputs = jobInputs.get(body.jobId)
+        if (!inputs?.length) {
+          // after a restart the in-memory map is empty: rebuild from the manifest
+          const restored = restoreInputs(body.jobId)
+          if (restored.error) {
+            return send(res, restored.missing ? 410 : 404, { ok: false, reason: restored.error })
+          }
+          inputs = restored.inputs
+          jobInputs.set(body.jobId, inputs)
+        }
         const chapterIndex = Number(body.chapterIndex)
         if (chapterIndex > 0) {
           const previous = jobs.get(body.jobId) || store.loadJob(body.jobId)
@@ -321,11 +530,30 @@ export function apply(ctx, config = {}) {
         return send(res, 200, { ok: true, job: { ...rest, hasReport: !!job.reportPath } })
       }
 
+      if (path === `${ROUTE}/job` && req.method === 'DELETE') {
+        const id = url.searchParams.get('id')
+        if (!id) return send(res, 400, { ok: false, reason: '缺少 id' })
+        const job = jobs.get(id) || store.loadJob(id)
+        if (!job) return send(res, 404, { ok: false, reason: '任务不存在' })
+        stopHeartbeat(id)
+        jobs.delete(id)
+        jobInputs.delete(id)
+        store.deleteJob(id, url.searchParams.get('withReport') === '1' ? job : null)
+        return send(res, 200, { ok: true, deleted: id })
+      }
+
       if (path === `${ROUTE}/report` && req.method === 'GET') {
         const id = url.searchParams.get('id')
         const format = (url.searchParams.get('format') || 'md').toLowerCase()
         const job = jobs.get(id) || (id && store.loadJob(id))
         if (!job) return send(res, 404, { ok: false, reason: '任务不存在' })
+        if (format === 'csv' || format === 'json') {
+          const body = format === 'csv' ? buildAnkiCsv(job) : buildCourseJson(job)
+          return send(res, 200, body, {
+            'content-type': format === 'csv' ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8',
+            'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(`${job.courseTitle || job.id}.${format}`)}`,
+          })
+        }
         let markdown = job.markdown
         if (!markdown && job.reportPath && existsSync(job.reportPath)) markdown = readFileSync(job.reportPath, 'utf8')
         if (!markdown) return send(res, 404, { ok: false, reason: '报告尚未生成' })
@@ -370,6 +598,15 @@ export function apply(ctx, config = {}) {
     ctx.logger?.warn?.(`[course-assistant] route unavailable: ${error}`)
   }
 
+  // A previous process may have died mid-run; mark those jobs before the panel
+  // starts polling them (otherwise it polls a `running` job forever).
+  try {
+    const reaped = reapZombies()
+    if (reaped) ctx.logger?.info?.(`[course-assistant] ${reaped} interrupted job(s) marked as zombie`)
+  } catch (error) {
+    ctx.logger?.warn?.(`[course-assistant] zombie scan failed: ${error.message}`)
+  }
+
   /* -------------------------------- tools -------------------------------- */
 
   const toolText = (value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }]
@@ -380,17 +617,21 @@ export function apply(ctx, config = {}) {
       name: 'course_assistant',
       description:
         '课程文件学习助手：把 .pptx/.pdf/.docx/.md/.txt 转成学习报告（课程目录、分章知识点与重难点、全课程总结，附录 B 站网课推荐）。' +
-        'action=analyze 分析给定文件（files 为工作区路径，可多个）；action=status 查询任务进度（jobId）；action=library 列出历史报告。',
+        'action=analyze 分析给定文件（files 为工作区路径，可多个）；action=status 查询任务进度（jobId）；' +
+        'action=library 列出历史报告；action=rerun 重跑整份任务或某一章（jobId + 可选 chapterIndex）；' +
+        'action=export 导出报告（jobId + format=md|pdf）；action=health 查看模型/OCR/版本状态。',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['analyze', 'status', 'library'], description: '操作类型' },
+          action: { type: 'string', enum: ['analyze', 'status', 'library', 'rerun', 'export', 'health'], description: '操作类型' },
           files: {
             type: 'array',
             items: { type: 'string' },
             description: '课程文件路径（绝对路径或相对当前工作目录）',
           },
-          jobId: { type: 'string', description: 'status 操作使用的任务 id' },
+          jobId: { type: 'string', description: 'status / rerun / export 使用的任务 id' },
+          chapterIndex: { type: 'number', description: 'rerun 时只重跑这一章（从 1 开始），省略则整份重跑' },
+          format: { type: 'string', enum: ['md', 'pdf'], description: 'export 的格式，默认 md' },
           withVideos: { type: 'boolean', description: '是否检索 B 站网课，默认 true' },
         },
         required: ['action'],
@@ -398,6 +639,44 @@ export function apply(ctx, config = {}) {
       },
       output: output({ type: 'object', additionalProperties: true }),
       async execute(args = {}) {
+        if (args.action === 'health') {
+          return {
+            ok: true,
+            version: PKG.version,
+            llm: !!resolveLlm(),
+            pdf: !!ctx.get('officeToPdf')?.convert,
+            ocrEngines: await ocrStatus(),
+            dataDir: store.dataDir,
+          }
+        }
+        if (args.action === 'export') {
+          const job = jobs.get(args.jobId) || (args.jobId && store.loadJob(args.jobId))
+          if (!job) return { ok: false, reason: '任务不存在' }
+          const format = args.format === 'pdf' ? 'pdf' : 'md'
+          if (format === 'md') {
+            const markdown = job.markdown || (job.reportPath ? readFileSync(job.reportPath, 'utf8') : '')
+            if (!markdown) return { ok: false, reason: '报告尚未生成' }
+            return { ok: true, jobId: job.id, format: 'md', reportPath: job.reportPath || '' }
+          }
+          const refreshed = job.markdown ? job : { ...job, markdown: job.reportPath ? readFileSync(job.reportPath, 'utf8') : '' }
+          try {
+            const pdfPath = await exportPdf(refreshed)
+            return { ok: true, jobId: job.id, format: 'pdf', reportPath: pdfPath }
+          } catch (error) {
+            return { ok: false, reason: error.message }
+          }
+        }
+        if (args.action === 'rerun') {
+          const previous = jobs.get(args.jobId) || (args.jobId && store.loadJob(args.jobId))
+          if (!previous) return { ok: false, reason: '任务不存在' }
+          const inputs = jobInputs.get(args.jobId) || restoreInputs(args.jobId).inputs
+          if (!inputs?.length) return { ok: false, reason: restoreInputs(args.jobId).error || '原任务的上传文件已过期' }
+          const chapterIndex = Number(args.chapterIndex) || 0
+          const job = chapterIndex > 0
+            ? await makeRerunJob(previous, inputs, chapterIndex, optionsOf({ withVideos: args.withVideos }))
+            : await makeJob(inputs, optionsOf({ withVideos: args.withVideos }))
+          return { ok: true, jobId: job.id, chapterIndex: chapterIndex || null, status: job.status }
+        }
         if (args.action === 'status') {
           const job = jobs.get(args.jobId) || (args.jobId && store.loadJob(args.jobId))
           if (!job) return { ok: false, reason: '任务不存在' }

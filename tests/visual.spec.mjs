@@ -37,6 +37,12 @@ test('课程助手面板：能打开、结构完整、外观稳定', async ({ pa
   await expect(panel.locator('.ca-drop-hint')).toContainText('.pptx')
   await expect(panel.getByRole('button', { name: '开始分析' })).toBeDisabled()
 
+  // structure first: an ARIA snapshot is stable across fonts and DPR, and is the
+  // half that can be committed even though the pixels cannot travel between hosts
+  await expect(panel).toMatchAriaSnapshot(`
+    - heading "课程助手" [level=2]
+  `)
+
   // stable screenshot: no caret, no animation, fixed viewport
   await expect(panel).toHaveScreenshot('panel.png', { caret: 'hide' })
 })

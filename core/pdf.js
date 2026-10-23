@@ -569,6 +569,7 @@ function contentToText(content, fonts) {
   let fragX1 = null
   let lineY = 0
   let lineSize = 12
+  let lineFont = ''
   let x = 0
   let y = 0
   let prevY = null
@@ -603,6 +604,7 @@ function contentToText(content, fonts) {
         x1: frags[frags.length - 1].x1,
         y: lineY,
         size: lineSize,
+        font: lineFont,
         fragments: frags,
       })
     }
@@ -621,6 +623,7 @@ function contentToText(content, fonts) {
       if (!frags.length && !fragText) {
         lineY = y
         lineSize = fontSize
+        lineFont = font?.baseFont || ''
       }
     } else if (lastEndX !== null && x - lastEndX > gapLimit()) {
       pushFrag()
@@ -906,7 +909,7 @@ function pageText(objects, page) {
             }
           }
         }
-        fonts.set(m[1], { cmap, codeBytes, twoByte: codeBytes === 2 })
+        fonts.set(m[1], { cmap, codeBytes, twoByte: codeBytes === 2, baseFont: dictValue(fontObj.dict, 'BaseFont') || '' })
       }
     }
   }
@@ -915,9 +918,23 @@ function pageText(objects, page) {
     const content = collectStream(objects, ref)
     if (content) collected.push(...contentToText(content, fonts))
   }
-  if (!collected.length) return ''
+  if (!collected.length) return { text: '', lines: [] }
   const ordered = orderByColumns(collected, pageWidthOf(objects, page))
-  return cleanup(ordered.map((line) => line.text).join('\n'))
+  return { text: cleanup(ordered.map((line) => line.text).join('\n')), lines: ordered }
+}
+
+/**
+ * Heading signals from the text layer: the largest font on the page and the
+ * line it belongs to. PowerPoint exports keep the real size in `Tf`, so a title
+ * slide can be told from a body slide without any OCR.
+ */
+function headingOf(lines) {
+  if (!lines?.length) return null
+  const sized = lines.filter((line) => line.text.trim().length >= 2 && line.size > 0)
+  if (!sized.length) return null
+  const biggest = sized.reduce((a, b) => (b.size > a.size ? b : a), sized[0])
+  const bold = /\b(bold|black|heavy|semibold|demi)\b/i.test(String(biggest.font || ''))
+  return { size: Math.round(biggest.size * 10) / 10, bold, text: biggest.text.slice(0, 60) }
 }
 
 function cleanup(text) {
@@ -1009,10 +1026,10 @@ export function parsePdf(buf, fileName) {
   expandObjectStreams(objects)
   const pages = []
   for (const p of pageList(objects)) {
-    const text = pageText(objects, p)
+    const { text, lines } = pageText(objects, p)
     if (!text) continue
     const title = pickTitle(text)
-    pages.push({ index: pages.length + 1, title, text })
+    pages.push({ index: pages.length + 1, title, text, heading: headingOf(lines) })
   }
   const outline = readOutline(objects).filter((i) => i.title && i.level <= 3)
   let title = outline[0]?.title || ''

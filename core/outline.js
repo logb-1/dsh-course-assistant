@@ -32,6 +32,84 @@ function sectionLabel(line) {
 
 /* ------------------------------ from pages ------------------------------ */
 
+/* ------------------------- structural signals ------------------------- */
+
+/** PowerPoint sections: the author's own chapter boundaries. */
+function chaptersFromSections(doc) {
+  const sections = doc.sections || []
+  const pages = doc.pages || []
+  if (sections.length < 2 || !pages.length) return null
+  const out = []
+  for (const section of sections) {
+    const own = (section.pages || []).map((n) => pages[n - 1]).filter(Boolean)
+    if (!own.length) continue
+    out.push({
+      title: section.name || chapterTitleFor(own, out.length),
+      source: 'sections',
+      pages: own.map((p) => p.index),
+      subs: own.map((p) => p.title).filter(Boolean),
+      text: cap(own.map((p) => p.text).join('\n\n')),
+    })
+  }
+  return out.length >= 2 ? out : null
+}
+
+/** Slides using the deck's own "section header" layout. */
+function chaptersFromSectionHead(doc) {
+  const pages = doc.pages || []
+  const starts = []
+  pages.forEach((page, i) => {
+    if (page.layout === 'secHead') starts.push(i)
+  })
+  if (starts.length < 2) return null
+  if (starts[0] > 0) starts.unshift(0)
+  return starts.map((from, k) => {
+    const slice = pages.slice(from, k + 1 < starts.length ? starts[k + 1] : pages.length)
+    return {
+      title: chapterTitleFor(slice, k),
+      source: 'section-head',
+      pages: slice.map((p) => p.index),
+      subs: slice.map((p) => p.title).filter(Boolean),
+      text: cap(slice.map((p) => p.text).join('\n\n')),
+    }
+  })
+}
+
+/**
+ * Dense PDFs: a page whose largest text is far above the document median is a
+ * chapter opening. Conservative on purpose — a false boundary is worse than a
+ * missed one, so a candidate must be short, well above the median and not
+ * adjacent to the previous candidate.
+ */
+function chaptersFromHeadingSize(doc) {
+  const pages = (doc.pages || []).filter((p) => p.heading?.size > 0)
+  if (pages.length < 8) return null
+  const sorted = pages.map((p) => p.heading.size).sort((a, b) => a - b)
+  const median = sorted[Math.floor(sorted.length / 2)] || 0
+  if (!median) return null
+  const starts = []
+  pages.forEach((page, i) => {
+    const heading = page.heading
+    if (heading.size < median * 1.45) return
+    const text = String(heading.text || '').trim()
+    if (text.length < 2 || text.length > 40) return
+    if (starts.length && i - starts[starts.length - 1] < 3) return
+    starts.push(i)
+  })
+  if (starts.length < 2 || starts.length > MAX_CHAPTERS) return null
+  if (starts[0] > 0) starts.unshift(0)
+  return starts.map((from, k) => {
+    const slice = pages.slice(from, k + 1 < starts.length ? starts[k + 1] : pages.length)
+    return {
+      title: chapterTitleFor(slice, k),
+      source: 'font-size',
+      pages: slice.map((p) => p.index),
+      subs: slice.map((p) => p.title).filter(Boolean),
+      text: cap(slice.map((p) => p.text).join('\n\n')),
+    }
+  })
+}
+
 function chaptersFromPages(doc) {
   const pages = doc.pages
   // 1) explicit per-page section marks (§ 03 · 理论框架)
@@ -66,9 +144,16 @@ function chaptersFromPages(doc) {
   }
 
   // 2) chapter-like slide titles (第3章 / Chapter 3)
+  // A header repeated on every page must NOT open a chapter per page: only a
+  // title that differs from the previous one marks a boundary.
   const starts = []
+  let lastTitle = ''
   pages.forEach((p, i) => {
-    if (CHAPTER_RE.test(norm(p.title))) starts.push(i)
+    const title = norm(p.title)
+    if (CHAPTER_RE.test(title) && title !== lastTitle) {
+      starts.push(i)
+      lastTitle = title
+    }
   })
   if (starts.length >= 2) {
     const groups = []
@@ -360,6 +445,47 @@ function chaptersFromPdfOutline(doc) {
 
 /* -------------------------------- merge -------------------------------- */
 
+const titleKey = (title) => norm(String(title || '')).replace(/^[#\s]+/, '').toLowerCase()
+
+/**
+ * A header repeated on every page (or a deck whose slides share a title) yields
+ * N identically named chapters. Adjacent duplicates are one chapter; a duplicate
+ * that appears later keeps its own chapter but gets its page range appended, so
+ * "（续）" is never needed and the reader can tell them apart.
+ */
+function mergeSameTitle(chapters) {
+  if (!chapters.length) return chapters
+  // a real "same chapter" repeats its title on every page; a chunk that merely
+  // starts with a repeated header but contains another heading must stay apart
+  const uniform = (ch) => {
+    const key = titleKey(ch.title)
+    return (ch.subs || []).length > 0 && (ch.subs || []).every((s) => titleKey(s) === key)
+  }
+  const merged = []
+  for (const chapter of chapters) {
+    const prev = merged[merged.length - 1]
+    if (prev && titleKey(prev.title) === titleKey(chapter.title) && uniform(prev) && uniform(chapter)) {
+      prev.text = cap(`${prev.text}\n\n${chapter.text}`)
+      prev.subs = [...new Set([...(prev.subs || []), ...(chapter.subs || [])])]
+      prev.pages = [...(prev.pages || []), ...(chapter.pages || [])]
+      continue
+    }
+    merged.push({ ...chapter, subs: [...(chapter.subs || [])], pages: [...(chapter.pages || [])] })
+  }
+  const seen = new Map()
+  for (const chapter of merged) {
+    const key = titleKey(chapter.title)
+    const count = (seen.get(key) || 0) + 1
+    seen.set(key, count)
+    if (count > 1) {
+      const pages = chapter.pages || []
+      const suffix = pages.length ? `（p${Math.min(...pages)}–${Math.max(...pages)}）` : `（${count}）`
+      chapter.title = `${chapter.title}${suffix}`
+    }
+  }
+  return merged
+}
+
 function mergeSmall(chapters) {
   if (chapters.length <= 1) return chapters
   const out = []
@@ -403,10 +529,15 @@ export function buildOutline(docs) {
     const pages = doc.pages || []
     const totalChars = pages.reduce((n, p) => n + (p.text || '').length, 0)
     const slideLike = pages.length >= 8 && totalChars / pages.length < 260
-    if (slideLike) {
+    // 1) PowerPoint sections and section-header layouts are explicit; 2) font size
+    // is a strong signal on dense PDFs; 3) the heuristics below stay as fallback.
+    if (doc.sections?.length >= 2) chapters = chaptersFromSections(doc)
+    if (!chapters) chapters = chaptersFromSectionHead(doc)
+    if (!chapters && slideLike) {
       const byNumber = chaptersFromSectionNumbers(doc)
       chapters = byNumber?.length >= 2 ? byNumber : chaptersByChars(doc)
     }
+    if (!chapters && !slideLike && doc.kind === 'pdf') chapters = chaptersFromHeadingSize(doc)
     if (!chapters && doc.outline?.length) {
       // A deck can carry one or two bookmarks for dozens of pages; trusting that
       // collapses the outline, so short bookmark lists only win on short files.
@@ -438,6 +569,10 @@ export function buildOutline(docs) {
     }
     if (!chapters && doc.text) chapters = chaptersFromText(doc.text, doc.title)
     if (!chapters) chapters = chaptersFromText('', doc.title)
+    // merge duplicates inside this document, before the multi-document prefix:
+    // otherwise two decks that happen to share a last/first chapter title merge
+    // across files
+    chapters = mergeSameTitle(chapters)
     if (docs.length > 1) {
       for (const ch of chapters) ch.title = `${doc.title}｜${ch.title}`
     }
@@ -463,6 +598,9 @@ export function buildOutline(docs) {
  */
 function mergeCover(chapters, docs) {
   if (chapters.length < 2) return chapters
+  // only decks carry a title slide; for markdown/docx the first heading is a
+  // real chapter and folding it into the next one deletes it
+  if (!chapters.some((c) => (c.pages?.length || 0) > 0)) return chapters
   const first = chapters[0]
   const docTitle = docs[0]?.title || ''
   const sameTitle = docTitle && norm(first.title) === norm(docTitle)

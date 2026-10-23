@@ -1,15 +1,19 @@
 # course-assistant bundle row.
-# Tunables live here so a profile upgrade never overwrites them:
-#   dataDir      uploads/cache/reports root (default <DSH_HOME>/course-assistant)
-#   concurrency  parallel chapter summaries, 1-5 (default 4)
-#   withVideos   default true; false skips every Bilibili request
-#   provider/model  summary model; omitted = the profile's default model
-#   domain       force the course domain, e.g. 'C++' (default: auto-detected
-#                from code fragments such as #include / std:: / cout)
-#   ocrMaxPages  cap for OCR re-reads (default 60)
-#   ocrEngine    force an OCR backend: 'windows' (WinRT) or 'rapidocr' (Python);
-#                omitted = the first available one
-#   ocrPython    python executable for the rapidocr engine (default: python/python3)
+# Since 1.4.0 the plugin exports a Schemastery `Config`: every field below is
+# validated at activation and editable from the settings page (bad values fail
+# loudly instead of starting half-configured). Precedence everywhere:
+#   request option > this config > built-in default
+# Fields:
+#   dataDir          uploads/cache/reports root (default <DSH_HOME>/course-assistant)
+#   concurrency      parallel chapter summaries, 1-5 (default 4)
+#   withVideos       default true; false skips every Bilibili request
+#   domain           force the course domain, e.g. 'C++' (default: auto-detected)
+#   ocrMaxPages      cap for OCR re-reads (default 60, 1-400)
+#   ocrEngine        'windows' | 'rapidocr' | '' (auto)
+#   ocrPython        python executable for the rapidocr engine
+#   provider/model   summary model; empty = the profile's default model
+#   spacingMs        Bilibili request spacing, >=1000 (default 1000)
+#   keepUploadsDays  upload retention (default 7)
 - insert:
     - id: course-assistant
       name: 'dsh-course-assistant'

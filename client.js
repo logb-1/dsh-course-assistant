@@ -46,6 +46,9 @@ window.__ModuleLoader__.load({
     .ca-ch-head{display:flex;align-items:flex-start;gap:8px;justify-content:space-between}
     .ca-ch-title{font-weight:600;font-size:13.5px}
     .ca-ch-subs{color:var(--dsw-alias-label-secondary);font-size:11.5px;margin-top:2px}
+    .ca-conf.ok{color:var(--dsw-alias-state-success-primary)}
+    .ca-conf.warn{color:var(--dsw-alias-state-warn-primary)}
+    .ca-conf.err{color:var(--dsw-alias-state-error-primary)}
     .ca-ch-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
     .ca-diff{margin-top:8px;border-top:1px dashed var(--dsw-alias-border-l1);padding-top:6px}
     .ca-diff-h{font-size:11.5px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}
@@ -300,6 +303,21 @@ window.__ModuleLoader__.load({
       )
     }
 
+    const pointText = (p) => (typeof p === 'string' ? p : String(p?.text ?? ''))
+    const confidenceText = (c) => {
+      const conf = c?.confidence || c?.summary?.confidence
+      if (!conf) return c?.support != null ? `与原文重合 ${Math.round(c.support * 100)}%` : ''
+      const ev = conf.evidence || {}
+      const bits = []
+      if (ev.checked) bits.push(`引文核对 ${ev.exact + ev.fuzzy}/${ev.checked} 条`)
+      if (conf.overlap != null) bits.push(`词面重合 ${Math.round(conf.overlap * 100)}%`)
+      return bits.join(' · ')
+    }
+    const confidenceClass = (c) => {
+      const tier = c?.confidence?.tier || c?.summary?.tier
+      return tier === 'suspect' ? 'err' : tier === 'weak' ? 'warn' : 'ok'
+    }
+
     function ChapterList({ job, busy, onRerunChapter }) {
       const chapters = job?.chapters || []
       if (!chapters.length) return h('div', { className: 'ca-empty' }, '目录识别完成后会在这里逐章显示。')
@@ -321,13 +339,8 @@ window.__ModuleLoader__.load({
                 null,
                 h('div', { className: 'ca-ch-title' }, `第 ${c.index} 章 ${c.title}`),
                 c.subs?.length ? h('div', { className: 'ca-ch-subs' }, c.subs.slice(0, 5).join(' · ')) : null,
-                c.support != null
-                  ? h(
-                      'div',
-                      { className: 'ca-ch-subs' },
-                      `与原文重合 ${Math.round(c.support * 100)}%` +
-                        (c.summary?.faithfulness != null ? ` · 有依据 ${Math.round(c.summary.faithfulness * 100)}%` : ''),
-                    )
+                c.support != null || c.confidence
+                  ? h('div', { className: `ca-ch-subs ca-conf ${confidenceClass(c)}` }, confidenceText(c))
                   : null,
               ),
               h(
@@ -352,7 +365,9 @@ window.__ModuleLoader__.load({
               ? h(
                   'ul',
                   { className: 'ca-ul' },
-                  (c.summary.key_points || []).map((p, i) => h('li', { key: `k${i}` }, p)),
+                  (c.summary.key_points || []).map((p, i) =>
+                    h('li', { key: `k${i}` }, pointText(p) + (p?.page ? `（p.${p.page}）` : '')),
+                  ),
                   (c.summary.important || []).map((p, i) => h('li', { key: `i${i}` }, `⭐ 重点：${p}`)),
                   (c.summary.difficult || []).map((p, i) => h('li', { key: `d${i}` }, `⚠️ 难点：${p}`)),
                 )
@@ -782,6 +797,8 @@ window.__ModuleLoader__.load({
                         { className: 'ca-row' },
                         h('button', { className: 'ca-btn small', onClick: () => download('md'), disabled: !job?.hasReport }, '下载 MD'),
                         h('button', { className: 'ca-btn small', onClick: () => download('pdf'), disabled: !job?.hasReport || (health && !health.pdf) }, '导出 PDF'),
+                        h('button', { className: 'ca-btn small', title: 'Anki 闪卡（CSV）', onClick: () => download('csv'), disabled: !job?.hasReport }, 'Anki 卡片'),
+                        h('button', { className: 'ca-btn small', title: '结构化 course.json', onClick: () => download('json'), disabled: !job?.hasReport }, 'course.json'),
                         h(
                           'button',
                           {

@@ -3,6 +3,7 @@
  */
 import { searchLink } from './bili.js'
 import { describeQuality } from './quality.js'
+import { describeConfidence, pointText } from './verify.js'
 
 const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim()
 
@@ -37,18 +38,34 @@ function chapterSection(c) {
   const points = (s.key_points || []).filter(Boolean)
   if (points.length) {
     lines.push('- 要点：')
-    for (const p of points) lines.push(`  - ${p}`)
+    for (const p of points) {
+      const page = Number(p?.page)
+      lines.push(`  - ${pointText(p)}${page ? `（p.${page}）` : ''}`)
+    }
   } else {
     lines.push('- 要点：（本章未提取到有效要点）')
   }
   for (const p of (s.important || []).filter(Boolean)) lines.push(`- ⭐ 重点：${p}`)
   for (const p of (s.difficult || []).filter(Boolean)) lines.push(`- ⚠️ 难点：${p}`)
-  if (s.lowConfidence) {
-    lines.push(`- 备注：本章要点与原文的重合度只有 ${Math.round((s.support || 0) * 100)}%，可能有推断成分，建议对照原页核对`)
-  }
+  // the note states what was measured; it never claims the model "编造" anything
+  const confidence = s.confidence || legacyConfidence(s)
+  const detail = describeConfidence(confidence, { paged: true })
+  if (detail) lines.push(`- 备注：${detail}`)
   if (s.keywords?.length) lines.push(`- 关键词：${s.keywords.join(' / ')}`)
-  if (c.summary?.error) lines.push(`- 备注：本章总结失败（${c.summary.error}），以上为本地兜底摘要`)
+  if (s.error) lines.push(`- 备注：本章总结失败（${s.error}），以上为本地兜底摘要`)
   return lines.join('\n')
+}
+
+/** Jobs saved before schemaVersion 2 only carry support / lowConfidence. */
+function legacyConfidence(summary) {
+  if (!summary?.lowConfidence) return null
+  return {
+    tier: 'weak',
+    reasons: [],
+    overlap: summary.support ?? null,
+    faithfulness: summary.faithfulness ?? null,
+    evidence: { checked: 0, exact: 0, fuzzy: 0, short: 0, missing: 0, ratio: null },
+  }
 }
 
 function seriesTable(series, fallback, courseTitle, seriesLinks = []) {

@@ -1,0 +1,53 @@
+name: ci
+
+# Zero-install gate: the unit suite and the client contract test are pure Node,
+# so they run on a stock runner without pnpm or a lockfile. The package job also
+# avoids installing anything (npm pack does not need the dependencies).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax
+        run: node --check index.js && node --check client.js
+      - name: Unit regressions (synthetic fixtures only)
+        run: node tools/regress.mjs --unit --strict
+      - name: Client loader contract
+        run: node tools/client-contract.mjs
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Pack
+        run: npm pack --pack-destination "$RUNNER_TEMP"
+      # This is the only gate that catches a file missing from `files` — the
+      # 1.3.0 release almost shipped without core/rapidocr.py.
+      - name: Every runtime file is inside the tarball
+        run: |
+          TGZ=$(ls "$RUNNER_TEMP"/dsh-course-assistant-*.tgz)
+          tar -tzf "$TGZ" | sort
+          for f in index.js client.js cordis.patch.yml core/ocr.ps1 core/rapidocr.py core/pipeline.js locale/zh.json icon.svg README.md LICENSE; do
+            tar -tzf "$TGZ" | grep -qx "package/$f" || { echo "::error::missing $f in the package"; exit 1; }
+          done
+      - name: Version is read from package.json, not hardcoded
+        run: |
+          if grep -n "version: '" index.js; then
+            echo "::error::health reports a hardcoded version"; exit 1
+          fi
