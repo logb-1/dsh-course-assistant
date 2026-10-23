@@ -247,7 +247,9 @@ G  gold 集 + NLTK windowdiff 的页级改造
   当前 **windowdiff 0.061 / F1 0.947（章 10 vs gold 11，封面并入）**
 - ~~5.1 完整 CTM~~：**已完成**。`q/Q` 维护 CTM，有效字号 = `Tf × √|det(Tm×CTM)|`；新增合成 PDF 断言
 - **§9 其余**：纯图页视觉（需要视觉模型，README 已注明）；**9.2 考纲覆盖、9.3 BM25 问答、9.4 分 P、9.6 增量课程均已完成**
-- **未发布**：1.4.0 只在本地与 GitHub，`pnpm publish` 未跑
+- **已发布**：npm **1.4.0**（2026-10-23 21:05，`latest`=1.4.0，31 个条目，含 `core/search.js`、`core/coverage.js`、
+  `core/ocr.ps1`、`core/rapidocr.py`）；依赖 `schemastery ^3.18.0`；tag `v1.4.0` 已推
+- **已推送**：`origin/main` = 884f402（0 ahead / 0 behind），`origin/wip/review-v1` 也在远端
 - **推送状态（第 3 轮，已确认是网络策略）**：本地 `main` = d157d10；**GitHub HTTPS 443 被拦**
   （`Test-NetConnection github.com 443` = False，`git push` 报 `Failed to connect ... :443`），
   但 **SSH 通**：`github.com:22` = True、`ssh.github.com:443` = True，而本机 `~/.ssh` 不存在（无密钥）。
