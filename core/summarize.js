@@ -6,14 +6,16 @@
  * only sees earlier key_points — never the source text again.
  */
 import { anchorQuery } from './domain.js'
-export const CHAPTER_PROMPT_VERSION = 3
+import { pointText } from './verify.js'
+export const CHAPTER_PROMPT_VERSION = 4
 const MAX_CHAPTER_CHARS = 3600
 
 const SYSTEM = [
   '你是大学课程助教。只输出一个 JSON 对象，不要解释、不要 Markdown 代码块。',
-  'JSON 结构：{"chapter": string, "key_points": string[], "important": string[], "difficult": string[], "keywords": string[], "unsupported_idx": number[]}',
+  'JSON 结构：{"chapter": string, "key_points": [{"text": string, "evidence": string}], "important": string[], "difficult": string[], "keywords": string[]}',
   '要求：key_points 3-6 条，每条不超过 40 字，必须来自给定原文，不要编造案例；important/difficult 各 0-2 条；',
-  'unsupported_idx 列出「原文里找不到依据」的 key_points 下标（从 0 开始）；全部有依据就给 []。',
+  'evidence 必须是原文里「连续出现」的片段（至少 10 个字），逐字照抄，不要改写、不要加省略号、不要拼接；',
+  '找不到原文片段支撑的要点就不要写，宁少写几条；',
   '原文信息不足时（例如整页只有图），就用原文里实际出现的词写短句，不要用通用教科书理论补全。',
   'keywords 2-4 个，用「学科领域 + 具体概念」的组合词，直接在 B 站能搜到该章网课（例如「计算机系统 缓存 命中率」「国际贸易 政策评估」），不要用「论证逻辑」这类通用方法论词。',
   '如果给出了「课程领域」，keywords 必须以该领域词开头（例如 C++ 课就写「C++ 异常处理」），严禁写成其它语言（Python/Java 等）。',
@@ -106,12 +108,23 @@ function parseJson(raw) {
       .map((x) => String(x || '').replace(/^[-*•\d.、\s]+/, '').trim())
       .filter(Boolean)
       .slice(0, max)
+  // key_points carry a mandatory quote; legacy caches may still hold plain strings
+  const points = (Array.isArray(value.key_points ?? value.keyPoints ?? value.points) ? value.key_points ?? value.keyPoints ?? value.points : [])
+    .map((p) => {
+      if (p && typeof p === 'object') {
+        return { text: String(p.text || p.point || '').trim(), evidence: String(p.evidence || p.quote || '').trim() }
+      }
+      return { text: String(p || '').replace(/^[-*•\d.、\s]+/, '').trim(), evidence: '' }
+    })
+    .filter((p) => p.text)
+    .slice(0, 8)
   return {
     chapter: String(value.chapter || ''),
-    key_points: arr(value.key_points ?? value.keyPoints ?? value.points, 8),
+    key_points: points.length ? points : arr(value.key_points ?? value.keyPoints ?? value.points, 8).map((text) => ({ text, evidence: '' })),
     important: arr(value.important ?? value.key ?? value.focus, 4),
     difficult: arr(value.difficult ?? value.hard ?? value.challenge, 4),
     keywords: arr(value.keywords ?? value.keyword ?? value.tags, 5),
+    // read-only compatibility: older prompts asked the model to self-report
     unsupported_idx: Array.isArray(value.unsupported_idx)
       ? value.unsupported_idx
           .map(Number)
@@ -203,7 +216,7 @@ function filterKeywords(list) {
 
 export async function summarizeCourse({ llm, provider, model, courseTitle, chapters, signal }) {
   const lines = chapters.map(
-    (c) => `第 ${c.index} 章 ${c.title}：${(c.summary?.key_points || []).join('；').slice(0, 160)}`,
+    (c) => `第 ${c.index} 章 ${c.title}：${(c.summary?.key_points || []).map(pointText).join('；').slice(0, 160)}`,
   )
   const prompt = [`课程名：${courseTitle}`, '各章要点：', ...lines, '', '请写全课程总结（≤300 字，中文）。'].join('\n')
   const raw = await collect(
@@ -254,9 +267,11 @@ export function localSummary(chapter) {
     if (!points.includes(line)) points.push(line)
   }
   const keywords = [...new Set((chapter.subs || []).map((s) => s.replace(/[：:（(].*$/, '')).filter((s) => s.length >= 2 && s.length <= 12))].slice(0, 3)
+  const picked = (points.length ? points : [chapter.title]).map((text) => ({ text, evidence: text }))
   return {
     chapter: chapter.title,
-    key_points: points.length ? points : [chapter.title],
+    // the line came from the source verbatim, so it doubles as its own quote
+    key_points: picked,
     important: [],
     difficult: [],
     keywords: keywords.length ? keywords : [chapter.title],

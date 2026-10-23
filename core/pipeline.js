@@ -9,7 +9,8 @@
  *      keywords exist, so partial results show up early.
  */
 import { createHash } from 'node:crypto'
-import { basename } from 'node:path'
+import { basename, relative, isAbsolute } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
 import { parseFile } from './parser.js'
 import { buildOutline } from './outline.js'
 import { summarizeChapter, summarizeCourse, mapLimit, localSummary, CHAPTER_PROMPT_VERSION } from './summarize.js'
@@ -17,9 +18,50 @@ import { buildReport } from './report.js'
 import { assessQuality, describeQuality } from './quality.js'
 import { ocrPdf, ocrStatus } from './ocr.js'
 import { detectDomain } from './domain.js'
-import { supportScore, SUPPORT_THRESHOLD } from './verify.js'
+import { evaluateSummary, describeConfidence, pointText } from './verify.js'
+
+/** Content-addressed OCR cache: reruns reuse the first run's pages byte-for-byte. */
+export function ocrCachePath(store, pdfPath, options = {}) {
+  const bytes = readFileSync(pdfPath)
+  const digest = createHash('sha256').update(bytes).digest('hex').slice(0, 32)
+  const engine = options.engine || 'auto'
+  const pages = Number(options.maxPages) || 60
+  return { key: `${digest}-${engine}-${pages}`, file: `${digest}-${engine}-${pages}.json` }
+}
 
 const sha = (text) => createHash('sha256').update(text).digest('hex').slice(0, 24)
+
+export const JOB_SCHEMA_VERSION = 2
+
+/** Cache identity: prompt version + text + everything else that changes the answer. */
+export function summaryCacheKey(text, { provider, model, domain } = {}) {
+  const scope = `${provider || '-'}/${model || '-'}/${domain?.id || '-'}`
+  return `sum:v${CHAPTER_PROMPT_VERSION}:${sha(text)}:${scope}`
+}
+
+/**
+ * Attach the credibility assessment to one chapter. Called by the first run and
+ * by the rerun path alike, so both produce identical fields (B3).
+ */
+export function applyAssessment({ summary, chapter, text, warnings }) {
+  const confidence = evaluateSummary(text, summary)
+  summary.confidence = confidence
+  summary.tier = confidence.tier
+  summary.overlap = confidence.overlap
+  summary.faithfulness = confidence.faithfulness
+  // legacy aliases kept for older clients and saved jobs
+  summary.support = confidence.overlap
+  summary.lowConfidence = confidence.tier === 'suspect' || confidence.tier === 'weak'
+  if (chapter) {
+    chapter.confidence = confidence
+    chapter.support = confidence.overlap
+  }
+  if (summary.lowConfidence) {
+    const detail = describeConfidence(confidence, { paged: true })
+    warnings.push(`第 ${chapter?.index ?? '?'} 章可信度偏低${detail ? `：${detail}` : ''}`)
+  }
+  return confidence
+}
 
 /**
  * @param {object} opts
@@ -29,6 +71,133 @@ const sha = (text) => createHash('sha256').update(text).digest('hex').slice(0, 2
  * @param {object} opts.deps { store, bili, llm: {provider, model, stream} | null }
  * @param {(job:object)=>void} opts.emit progress callback (same object mutated)
  */
+/* ------------------------- shared preparation step ------------------------- */
+
+/**
+ * Parse the inputs, drop same-name PDF twins and (optionally) re-read with OCR.
+ *
+ * Shared by the first run and every rerun: the rerun path must see exactly the
+ * same documents as the original job, otherwise chapter numbers drift.
+ * OCR results are cached by content hash so a rerun never re-runs OCR.
+ */
+async function prepareDocs({ inputs, store, ocr, warnings, push }) {
+  const docs = []
+  const files = []
+  for (const input of inputs) {
+    const label = input.name || basename(input.path)
+    try {
+      if (input.convertError) throw new Error(`旧格式转换失败：${input.convertError}`)
+      const doc = parseFile(input.path, input.name)
+      doc.name = label
+      doc.sourcePath = input.path
+      // "幻灯片 12" is a slide-number placeholder, not a course title
+      if (/^(幻灯片|slide)\s*\d+$/i.test(String(doc.title || '').trim())) {
+        doc.title = label.replace(/\.[^.]+$/, '')
+      }
+      docs.push(doc)
+      files.push({ name: label, kind: doc.kind, pages: doc.pages?.length || 0, title: doc.title })
+    } catch (error) {
+      warnings.push(`解析失败：${label} — ${error.message}`)
+    }
+  }
+  if (!docs.length) return { docs, files, dropped: [], ocrInfo: null }
+
+  // Prefer the Office source over an exported PDF of the same deck: the XML text
+  // is complete, the PDF text often only carries glyph ids.
+  const stem = (name) => String(name || '').replace(/\.[^.]+$/, '').toLowerCase().trim()
+  const dropped = []
+  const kept = docs.filter((doc) => {
+    if (doc.kind !== 'pdf') return true
+    const twin = docs.find((d) => d !== doc && d.kind !== 'pdf' && stem(d.name) === stem(doc.name))
+    if (twin) {
+      dropped.push(`${doc.name}（改用 ${twin.name}）`)
+      return false
+    }
+    return true
+  })
+  if (dropped.length) warnings.push(`同名的 PDF 已跳过：${dropped.join('、')} 的文本更可靠`)
+  const usable = dropped.length ? kept : docs
+
+  /* ---------------- optional OCR re-read ---------------- */
+  let ocrInfo = null
+  if (ocr?.enabled === true) {
+    const requested = ocr.engine
+    const maxPages = Number(ocr.maxPages) || 60
+    const engines = await ocrStatus()
+    const ready = requested ? engines.find((e) => e.id === requested)?.available : engines.some((e) => e.available)
+    const targets = usable.filter((d) => d.kind === 'pdf' && d.sourcePath)
+    if (!ready) {
+      warnings.push(
+        requested
+          ? `OCR 引擎 ${requested} 不可用：${engines.find((e) => e.id === requested)?.label || '未知引擎'}`
+          : 'OCR 不可用：没有检测到 OCR 引擎（Windows 内置 WinRT；其他平台 pip install rapidocr_onnxruntime pymupdf）',
+      )
+    } else {
+      ocrInfo = { engine: requested || 'auto', maxPages }
+    }
+    for (const doc of ready ? targets : []) {
+      try {
+        const cache = ocrCachePath(store, doc.sourcePath, { engine: requested, maxPages })
+        let pages = store.readOcr?.(cache.file) || null
+        if (pages) {
+          push({ message: `OCR 缓存命中：${doc.name}`, progress: 0.06 })
+        } else {
+          push({ phase: 'ocr', message: `OCR 重读：${doc.name}`, progress: 0.05 })
+          pages = await ocrPdf(doc.sourcePath, {
+            engine: requested,
+            python: ocr.python,
+            maxPages,
+            onProgress: (done, total) =>
+              push({
+                message: `OCR 第 ${done}/${total || '?'} 页：${doc.name}`,
+                progress: Math.min(0.16, 0.05 + 0.11 * (done / Math.max(1, total || done))),
+              }),
+          })
+          if (pages?.length) store.writeOcr?.(cache.file, { pages, engine: requested || 'auto', maxPages, sha: cache.key })
+        }
+        if (pages?.length) {
+          doc.pages = pages.map((p, i) => ({ index: i + 1, title: p.title || '', text: p.text }))
+          doc.text = pages.map((p) => p.text).join('\n\n')
+          doc.ocr = true
+          const row = files.find((f) => f.name === doc.name)
+          if (row) {
+            row.pages = doc.pages.length
+            row.ocr = true
+          }
+        }
+      } catch (error) {
+        warnings.push(`OCR 失败（${doc.name}）：${error.message}`)
+      }
+    }
+  }
+
+  const scanned = usable.filter((d) => d.kind === 'pdf' && d.pages.length && d.pages.every((p) => p.text.length < 40))
+  if (scanned.length) warnings.push(`疑似扫描版 PDF（无文本层）：${scanned.map((d) => d.name).join('、')}`)
+  return { docs: usable, files, dropped, ocrInfo }
+}
+
+/** Input manifest: what the job consumed, in a form that survives a restart. */
+function manifestInputs(inputs, store) {
+  return inputs.map((input) => {
+    let sha256 = ''
+    try {
+      sha256 = createHash('sha256').update(readFileSync(input.path)).digest('hex').slice(0, 16)
+    } catch {}
+    let path = input.path
+    if (store?.dataDir && isAbsolute(path)) {
+      const rel = relative(store.dataDir, path)
+      if (rel && !rel.startsWith('..')) path = rel
+    }
+    return {
+      uploadId: input.uploadId || '',
+      name: input.name || basename(input.path),
+      path,
+      sha256,
+      convertedFrom: input.convertedFrom || '',
+    }
+  })
+}
+
 export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   const { store, bili, llm } = deps
   const started = Date.now()
@@ -65,85 +234,23 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   }
   push({})
 
-  /* ---------------- 1. parse ---------------- */
-  let docs = []
-  for (const input of inputs) {
-    const label = input.name || basename(input.path)
-    try {
-      if (input.convertError) throw new Error(`旧格式转换失败：${input.convertError}`)
-      const doc = parseFile(input.path, input.name)
-      doc.name = label
-      doc.sourcePath = input.path
-      // "幻灯片 12" is a slide-number placeholder, not a course title
-      if (/^(幻灯片|slide)\s*\d+$/i.test(String(doc.title || '').trim())) {
-        doc.title = label.replace(/\.[^.]+$/, '')
-      }
-      docs.push(doc)
-      job.files.push({ name: label, kind: doc.kind, pages: doc.pages?.length || 0, title: doc.title })
-    } catch (error) {
-      warnings.push(`解析失败：${label} — ${error.message}`)
-    }
-  }
+  /* ---------------- 1. parse + twins + optional OCR ---------------- */
+  const prepared = await prepareDocs({
+    inputs,
+    store,
+    ocr: options?.ocr === true ? { enabled: true, engine: options.ocrEngine, python: options.ocrPython, maxPages: options.ocrMaxPages } : null,
+    warnings,
+    push,
+  })
+  let docs = prepared.docs
+  job.files = prepared.files
+  job.inputs = manifestInputs(inputs, store)
+  job.inputsDropped = prepared.dropped
+  job.ocr = prepared.ocrInfo
+  job.schemaVersion = JOB_SCHEMA_VERSION
   if (!docs.length) {
     push({ status: 'error', phase: 'error', error: `所有文件都无法解析：${warnings.join('；')}`, progress: 1 })
     return job
-  }
-  // Prefer the Office source over an exported PDF of the same deck: the XML text
-  // is complete, the PDF text often only carries glyph ids.
-  const stem = (name) => String(name || '').replace(/\.[^.]+$/, '').toLowerCase().trim()
-  const twinsDropped = []
-  const kept = docs.filter((doc) => {
-    if (doc.kind !== 'pdf') return true
-    const twin = docs.find((d) => d !== doc && d.kind !== 'pdf' && stem(d.name) === stem(doc.name))
-    if (twin) {
-      twinsDropped.push(`${doc.name}（改用 ${twin.name}）`)
-      return false
-    }
-    return true
-  })
-  if (twinsDropped.length) {
-    docs = kept
-    warnings.push(`同名的 PDF 已跳过：${twinsDropped.join('、')} 的文本更可靠`)
-  }
-  const scanned = docs.filter((d) => d.kind === 'pdf' && d.pages.length && d.pages.every((p) => p.text.length < 40))
-  if (scanned.length) warnings.push(`疑似扫描版 PDF（无文本层）：${scanned.map((d) => d.name).join('、')}`)
-
-  /* ---------------- 1.4 optional OCR re-read ---------------- */
-  if (options?.ocr === true) {
-    const requested = options.ocrEngine
-    const engines = await ocrStatus()
-    const ready = requested ? engines.find((e) => e.id === requested)?.available : engines.some((e) => e.available)
-    const targets = docs.filter((d) => d.kind === 'pdf' && d.sourcePath)
-    if (!ready) {
-      warnings.push(
-        requested
-          ? `OCR 引擎 ${requested} 不可用：${engines.find((e) => e.id === requested)?.label || '未知引擎'}`
-          : 'OCR 不可用：没有检测到 OCR 引擎（Windows 内置 WinRT；其他平台 pip install rapidocr_onnxruntime pymupdf）',
-      )
-    }
-    for (const doc of ready ? targets : []) {
-      try {
-        push({ phase: 'ocr', message: `OCR 重读：${doc.name}`, progress: 0.05 })
-        const pages = await ocrPdf(doc.sourcePath, {
-          engine: requested,
-          python: options.ocrPython,
-          maxPages: Number(options.ocrMaxPages) || 60,
-          onProgress: (done, total) =>
-            push({
-              message: `OCR 第 ${done}/${total || '?'} 页：${doc.name}`,
-              progress: Math.min(0.16, 0.05 + 0.11 * (done / Math.max(1, total || done))),
-            }),
-        })
-        if (pages.length) {
-          doc.pages = pages.map((p, i) => ({ index: i + 1, title: p.title || '', text: p.text }))
-          doc.text = pages.map((p) => p.text).join('\n\n')
-          doc.ocr = true
-          job.files = job.files.map((f) => (f.name === doc.name ? { ...f, pages: doc.pages.length, ocr: true } : f))
-        }
-      } catch (error) {
-        warnings.push(`OCR 失败（${doc.name}）：${error.message}`)
-      }
-    }
   }
 
   /* ---------------- 1.5 quality gate ---------------- */
@@ -161,6 +268,13 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
 
   /* ---------------- 2. outline ---------------- */
   const outline = buildOutline(docs)
+  // Lock the boundaries in the job: a rerun replays them instead of re-deriving,
+  // so changing the chaptering algorithm never renumbers an existing job.
+  job.outline = {
+    source: outline.source || 'heuristic',
+    boundaries: outline.chapters.map((c) => ({ index: c.index, title: c.title, pages: c.pages || [], chars: c.text.length })),
+    hash: createHash('sha256').update(outline.chapters.map((c) => `${c.title}#${(c.pages || []).join(',')}`).join('|')).digest('hex').slice(0, 16),
+  }
   // Anchor the whole run to one language/domain so chapter searches cannot drift
   // (a C++ lecture must not surface Python/Java tutorials for "异常处理").
   const domain = detectDomain(docs, options?.domain)
@@ -212,11 +326,12 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     concurrency,
     async ({ chapter, text }) => {
       let summary = null
-      const hash = sha(text)
-      const cacheKey = `sum:v${CHAPTER_PROMPT_VERSION}:${hash}`
+      const cacheKey = summaryCacheKey(text, { provider: llm?.provider, model: llm?.model, domain })
       if (useModel) {
         try {
-          summary = await store.cache.get(cacheKey)
+          const cached = await store.cache.get(cacheKey)
+          // clone: the assessment fields written below must never leak into the cache
+          if (cached) summary = structuredClone(cached)
         } catch {}
         if (!summary) {
           try {
@@ -230,7 +345,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
               domain,
               signal,
             })
-            await store.cache.set(cacheKey, summary, 30 * 86400 * 1000)
+            await store.cache.set(cacheKey, structuredClone(summary), 30 * 86400 * 1000)
           } catch (error) {
             summary = { ...localSummary({ ...chapter, text }), error: error.message, offline: true }
             warnings.push(`第 ${chapter.index} 章总结失败：${error.message}`)
@@ -239,24 +354,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       } else {
         summary = { ...localSummary({ ...chapter, text }), offline: true }
       }
-      chapter.summary = summary
-      chapter.status = 'done'
-      // did the bullets actually come from this chapter's text?
-      try {
-        const support = supportScore(text, summary.key_points || [])
-        summary.support = support
-        chapter.support = support
-        // statement-level check: the model marks bullets it could not source
-        const total = (summary.key_points || []).length
-        const marked = Array.isArray(summary.unsupported_idx)
-        const faithfulness = marked && total ? 1 - summary.unsupported_idx.length / total : null
-        summary.faithfulness = faithfulness === null ? null : Math.round(faithfulness * 100) / 100
-        if (support < SUPPORT_THRESHOLD || (faithfulness !== null && faithfulness < 0.6)) {
-          summary.lowConfidence = true
-          const faithText = faithfulness === null ? '—' : `${Math.round(faithfulness * 100)}%`
-          warnings.push(`第 ${chapter.index} 章可信度偏低：有依据 ${faithText}，与原文重合 ${Math.round(support * 100)}%`)
-        }
-      } catch {}
+      applyAssessment({ summary, chapter, text, warnings })
       doneCount += 1
       push({
         message: `总结第 ${chapter.index}/${chapters.length} 章：${chapter.title.slice(0, 24)}`,
@@ -391,7 +489,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
 /* --------------------------- chapter-level rerun --------------------------- */
 
 const bulletOf = (summary) => [
-  ...(summary?.key_points || []).map((text) => ({ kind: '要点', text: String(text) })),
+  ...(summary?.key_points || []).map((point) => ({ kind: '要点', text: pointText(point) })),
   ...(summary?.important || []).map((text) => ({ kind: '重点', text: String(text) })),
   ...(summary?.difficult || []).map((text) => ({ kind: '难点', text: String(text) })),
 ]
@@ -455,27 +553,56 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   }
   push({})
 
-  const docs = []
-  for (const input of inputs) {
-    try {
-      const doc = parseFile(input.path, input.name)
-      doc.name = input.name || basename(input.path)
-      doc.sourcePath = input.path
-      docs.push(doc)
-    } catch (error) {
-      warnings.push(`解析失败：${input.name || input.path} — ${error.message}`)
-    }
-  }
+  const prepared = await prepareDocs({
+    inputs,
+    store,
+    // replay exactly the OCR the first run used: the cache makes it instant, and
+    // without it the chapter text (and therefore the numbering) would differ
+    ocr: previous.ocr ? { enabled: true, engine: previous.ocr.engine, maxPages: previous.ocr.maxPages } : null,
+    warnings,
+    push,
+  })
+  const docs = prepared.docs
+  job.files = prepared.files.length ? prepared.files : job.files
+  job.inputs = manifestInputs(inputs, store)
   if (!docs.length) {
     push({ status: 'error', phase: 'error', error: '原文件无法再解析，请重新上传后重跑', progress: 1 })
     return job
   }
-  const outline = buildOutline(docs)
-  const outlined = outline.chapters
-  const target =
-    outlined.find((c) => c.index === Number(chapterIndex)) || outlined[Math.max(0, Number(chapterIndex) - 1)]
+
+  // Replay the locked boundaries when they exist: changing the chaptering
+  // algorithm must never renumber an existing job.
+  const previousRow = (previous.chapters || []).find((c) => c.index === Number(chapterIndex))
+  let target = null
+  const locked = Array.isArray(previous.outline?.boundaries) ? previous.outline.boundaries : null
+  if (locked && docs.length === 1) {
+    const boundary = locked.find((b) => b.index === Number(chapterIndex)) || locked[Number(chapterIndex) - 1]
+    if (boundary?.pages?.length) {
+      const wanted = new Set(boundary.pages)
+      const text = (docs[0].pages || [])
+        .filter((p) => wanted.has(p.index))
+        .map((p) => p.text)
+        .join('\n\n')
+      if (text) {
+        target = {
+          index: boundary.index,
+          title: boundary.title || previousRow?.title || `第 ${boundary.index} 章`,
+          subs: previousRow?.subs || [],
+          pages: boundary.pages,
+          text,
+        }
+      }
+    }
+  }
+  let outline = null
   if (!target) {
-    push({ status: 'error', phase: 'error', error: `找不到第 ${chapterIndex} 章（当前共 ${outlined.length} 章）`, progress: 1 })
+    outline = buildOutline(docs)
+    target =
+      outline.chapters.find((c) => c.index === Number(chapterIndex)) || outline.chapters[Math.max(0, Number(chapterIndex) - 1)]
+  }
+  const chapterCount = (previous.chapters || []).length || outline?.chapters.length || 0
+  if (!target) {
+    push({ status: 'error', phase: 'error', error: `找不到第 ${chapterIndex} 章（当前共 ${chapterCount} 章）`, progress: 1 })
     return job
   }
 
@@ -493,21 +620,22 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   push({ message: `重新总结第 ${target.index} 章：${target.title.slice(0, 20)}`, progress: 0.35 })
 
   let summary
+  const cacheKey = summaryCacheKey(target.text, { provider: llm?.provider, model: llm?.model, domain })
   if (llm) {
     try {
       summary = await summarizeChapter({
         llm,
         provider: llm.provider,
         model: llm.model,
-        courseTitle: previous.courseTitle || outline.courseTitle,
+        courseTitle: previous.courseTitle || outline?.courseTitle || '',
         chapter,
-        outline: outlined.map((c) => c.title),
+        outline: (previous.chapters || []).map((c) => c.title),
         domain,
         signal,
       })
       // a rerun deliberately bypasses the cache read, but the fresh answer is
       // worth keeping for the next full run
-      await store.cache.set(`sum:v${CHAPTER_PROMPT_VERSION}:${sha(target.text)}`, summary, 30 * 86400 * 1000)
+      await store.cache.set(cacheKey, structuredClone(summary), 30 * 86400 * 1000)
     } catch (error) {
       warnings.push(`第 ${target.index} 章重跑失败：${error.message}`)
       summary = { ...localSummary({ ...chapter, text: target.text }), offline: true, error: error.message }
@@ -515,13 +643,8 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   } else {
     summary = { ...localSummary({ ...chapter, text: target.text }), offline: true }
   }
-  try {
-    const support = supportScore(target.text, summary.key_points || [])
-    summary.support = support
-    const total = (summary.key_points || []).length
-    const marked = Array.isArray(summary.unsupported_idx)
-    summary.faithfulness = marked && total ? Math.round((1 - summary.unsupported_idx.length / total) * 100) / 100 : null
-  } catch {}
+  // same assessment as the first run, otherwise the note disappears after a rerun
+  applyAssessment({ summary, chapter, text: target.text, warnings })
 
   const oldChapter =
     (previous.chapters || []).find((c) => c.index === target.index) || (previous.chapters || [])[Number(chapterIndex) - 1] || {}
@@ -542,7 +665,7 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   if (options?.withVideos !== false && bili) {
     push({ message: `重新检索第 ${target.index} 章的 B 站网课…`, progress: 0.6 })
     try {
-      const keywords = (summary.keywords || []).slice(0, outlined.length > 12 ? 1 : 2)
+      const keywords = (summary.keywords || []).slice(0, chapterCount > 12 ? 1 : 2)
       const res = await bili.recommendChapter(keywords.length ? keywords : [target.title], {
         domain,
         chapterTitle: target.title,
@@ -573,7 +696,7 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
 
   push({ phase: 'report', message: '重建报告…', progress: 0.85 })
   const markdown = buildReport({
-    courseTitle: previous.courseTitle || outline.courseTitle,
+    courseTitle: previous.courseTitle || outline?.courseTitle || '',
     files: previous.files || [],
     chapters: job.chapters,
     courseSummary: previous.courseSummary || '',
@@ -591,7 +714,7 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
       generatedAt: new Date().toISOString().slice(0, 19).replace('T', ' '),
     },
   })
-  const reportPath = store.writeReport(previous.courseTitle || outline.courseTitle || 'course', markdown)
+  const reportPath = store.writeReport(previous.courseTitle || outline?.courseTitle || 'course', markdown)
   push({
     status: 'done',
     phase: 'done',

@@ -12,7 +12,9 @@
  */
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { hostname } from 'node:os'
+import { basename, isAbsolute, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createStore, resolveDataDir } from './core/store.js'
 import { createBiliClient } from './core/bili.js'
 import { runPipeline, rerunChapter } from './core/pipeline.js'
@@ -20,11 +22,23 @@ import { ocrAvailable, ocrStatus } from './core/ocr.js'
 import { markdownToDocx } from './core/docx.js'
 import { SUPPORTED } from './core/parser.js'
 
+const HERE = join(fileURLToPath(new URL('.', import.meta.url)))
+const PKG = (() => {
+  try {
+    return JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8'))
+  } catch {
+    return { version: '0.0.0' }
+  }
+})()
+
 export const name = 'course-assistant'
 export const inject = ['tools', 'webServer']
 
 const ROUTE = '/course-assistant'
 const MAX_UPLOAD = 60 * 1024 * 1024
+const HEARTBEAT_MS = 15_000
+const STALE_MS = 90_000
+const BOOT_ID = randomUUID()
 const text = (s) => [{ type: 'text', text: s }]
 
 function readBody(req, limit = MAX_UPLOAD) {

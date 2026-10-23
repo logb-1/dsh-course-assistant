@@ -40,7 +40,26 @@ export function createStore(dataDir) {
   const uploadsDir = ensure(join(dataDir, 'uploads'))
   const reportsDir = ensure(join(dataDir, 'reports'))
   const jobsDir = ensure(join(dataDir, 'jobs'))
+  const ocrDir = ensure(join(dataDir, 'ocr'))
   const cachePath = join(dataDir, 'cache.json')
+  const uploadsIndexPath = join(uploadsDir, 'index.json')
+
+  /** uploadId → { name, path, sha256, bytes, createdAt, lastUsedAt } */
+  let uploadsIndex = null
+  const loadIndex = () => {
+    if (uploadsIndex) return uploadsIndex
+    try {
+      uploadsIndex = JSON.parse(readFileSync(uploadsIndexPath, 'utf8')) || {}
+    } catch {
+      uploadsIndex = {}
+    }
+    return uploadsIndex
+  }
+  const saveIndex = () => {
+    try {
+      atomicWrite(uploadsIndexPath, JSON.stringify(uploadsIndex || {}))
+    } catch {}
+  }
 
   let cacheData = null
   const loadCache = () => {
@@ -69,6 +88,7 @@ export function createStore(dataDir) {
     uploadsDir,
     reportsDir,
     jobsDir,
+    ocrDir,
 
     cache: {
       async get(key) {
@@ -100,7 +120,48 @@ export function createStore(dataDir) {
       const id = `${Date.now().toString(36)}-${hash}`
       const path = join(uploadsDir, `${id}${extname(safeName).toLowerCase()}`)
       writeFileSync(path, buf)
-      return { id, name: safeName, path, bytes: buf.length, sha256: hash }
+      const record = { id, name: safeName, path, bytes: buf.length, sha256: hash, createdAt: Date.now(), lastUsedAt: Date.now() }
+      loadIndex()[id] = record
+      saveIndex()
+      return record
+    },
+
+    /** Look up an upload after a restart (the in-memory map is gone). */
+    findUpload(id) {
+      const record = loadIndex()[id]
+      if (!record) return null
+      if (!existsSync(record.path)) return { ...record, missing: true }
+      return record
+    },
+
+    /** Mark uploads as still in use so pruning cannot delete a live job's input. */
+    touchUploads(ids = []) {
+      const index = loadIndex()
+      let changed = false
+      for (const id of ids) {
+        if (index[id]) {
+          index[id].lastUsedAt = Date.now()
+          changed = true
+        }
+      }
+      if (changed) saveIndex()
+    },
+
+    readOcr(file) {
+      try {
+        const data = JSON.parse(readFileSync(join(ocrDir, file), 'utf8'))
+        return data?.pages?.length ? data.pages : null
+      } catch {
+        return null
+      }
+    },
+    writeOcr(file, payload) {
+      try {
+        atomicWrite(join(ocrDir, file), JSON.stringify(payload))
+        return true
+      } catch {
+        return false
+      }
     },
 
     saveJob(job) {
@@ -147,14 +208,28 @@ export function createStore(dataDir) {
       return path
     },
 
-    /** Drop uploads older than N days (called opportunistically). */
+    /** Drop uploads older than N days, honouring "still referenced by a job". */
     pruneUploads(days = 7) {
       const cutoff = Date.now() - days * 86400000
+      const index = loadIndex()
+      const keep = new Set()
       try {
-        for (const name of readdirSync(uploadsDir)) {
-          const p = join(uploadsDir, name)
-          if (statSync(p).mtimeMs < cutoff) rmSync(p, { force: true })
+        for (const [id, record] of Object.entries(index)) {
+          const stamp = Math.max(record.lastUsedAt || 0, record.createdAt || 0)
+          if (stamp < cutoff) {
+            rmSync(record.path, { force: true })
+            delete index[id]
+          } else {
+            keep.add(record.path)
+          }
         }
+        // files written before the index existed: fall back to mtime
+        for (const name of readdirSync(uploadsDir)) {
+          if (name === 'index.json') continue
+          const p = join(uploadsDir, name)
+          if (statSync(p).mtimeMs < cutoff && !keep.has(p)) rmSync(p, { force: true })
+        }
+        saveIndex()
       } catch {}
     },
   }
