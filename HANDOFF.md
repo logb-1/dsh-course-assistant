@@ -286,4 +286,26 @@ node tools/nightly-visual.mjs              # 真面板（需 web-token.txt）
 **仍可改进**：`vocab` 里仍有「表示/存储/数据」这类宽泛词；`码点空间` 这类术语 B 站覆盖差，
 需要更宽松的 L2.5（同义词/上位词）才能填补。
 
+## 十三、2026-10-24 凌晨 · 投稿 awesome-dsh-plugin
+
+按上游 `contributing.md` 只加一个文件 `data/plugins/<owner>__<repo>.yml`，通过 fork → 分支 → PR 的流程提交。
+
+- 稿子：fork `logb-1/awesome-dsh-plugin`，分支 `add-course-assistant`，未改两个生成的 README。
+- 唯一新增文件 `data/plugins/logb-1__dsh-course-assistant.yml`：
+  `url` / `name` / `category: docs` / `description.en` / `description.zh`（en 含逗号无 ": "，仍加引号）。
+- PR：**https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/8996**（open，mergeable，changed_files=1）
+- **PR check 已通过**（`success`，约 6 分钟：npm ci + awesome-lint + 站点构建全绿）。
+- **Submission gate 红**，但唯一原因是仓库年龄：
+  `repository is 0.5 days old (needs 1) — nothing to do: this check re-runs by itself and should clear in about 12h`
+  上游 `regate.yml`（cron `19 */6 * * *`）会对"已到期"的 PR 重跑 `PR check` 并再次触发 gate；
+  本仓库创建于 `2026-10-23T05:21:46Z`，满 1 天 = `2026-10-24T05:21:46Z`（北京 13:21:46），
+  下一班 regate 在 `2026-10-24T06:19Z`（北京 14:19）→ 预计那时自动转绿，**无需重提 PR**。
+- 分类取 `docs`：该分类现有条目就是 PDF 解析、知识库、文档阅读模式这类，语义吻合。
+
+注意事项（下次投稿别踩）：
+1. fork 后不能用 `"sha": "main"` 建分支，必须取 `GET /repos/<me>/<repo>/git/ref/heads/main` 的 `object.sha`。
+2. `check-submission.mjs` 的 `MIN_AGE_DAYS = 1` 按**仓库创建时间**算，不看提交数；新建仓库当天投必红，等 regate。
+3. 描述里出现 `": "` 必须加引号（我们用了单引号整行包裹）。
+4. 两个 README 由 `data/plugins` 生成，PR 里**不要动**；只加 yml 是官方接受的常见形态。
+
 **发布**：1.5.0 已发 npm，tag `v1.5.0`。
