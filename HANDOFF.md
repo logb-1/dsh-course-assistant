@@ -209,3 +209,53 @@ G  gold 集 + NLTK windowdiff 的页级改造
 - **`git checkout` 在 pwsh 里 exit code 1 是假报警**：git 把 `Switched to...` 写到 stderr，
   PowerShell 当成错误流，命令本身是成功的。
 - **桌面 .txt 用 CRLF + UTF-8 无 BOM** 写，记事本才不会一行到底。
+
+## 十一、2026-10-23 晚 · 1.4.0 完成（**取代第十节的状态表**）
+
+`main` = 57ce4e7，版本 **1.4.0**，`regress` **19 项全绿**（`--unit` 11 + `--real` 8），
+插件已装并运行在 1.4.0（`health.version` 读 `package.json`）。任务本《审阅意见_v1》按下表收口。
+
+### 已按审阅意见完成
+
+| 审阅项 | 结果 |
+|---|---|
+| 0 / B1 | 写缓存前 `structuredClone`，读后也 clone；缓存只存模型原始输出 |
+| 0 / B2 | `prepareDocs()` 共用；OCR 按 `sha256+引擎+页数` 缓存，重跑命中缓存 |
+| 0 / B3 | `applyAssessment()` 首跑/重跑共用，写 `chapter.summary/status/confidence` |
+| 2.1 同名章节 | `chaptersFromPages` 只在标题变化处开新章；`mergeSameTitle()` 相邻合并、非相邻附页码区间 |
+| 2.2 多文件前缀 | 同名合并在加 `文档名｜` 前缀之前、按单文件进行 |
+| 2.3-2.8 | 缓存污染已修；prompt v5；缓存键含 provider/model/domain；引文最短 10 字、4-gram 模糊匹配 |
+| 3.1-3.5 | manifest（inputs/outline/ocr/schemaVersion）+ 15s 心跳 + 僵尸扫描 + prune 看引用；**未做 boot 自动续跑** |
+| 4.x | `Config` 11 字段（Schemastery），`Config.listConfigs` 从 `absent` → `schema`；优先级统一为请求>配置>默认 |
+| 5.x 部分 | PPTX `p14:sectionLst` + `secHead` 版式 + 字号信号；PDF `heading{size,bold}` + 字号分章（密度型 PDF） |
+| 6.1-6.4 | CI 零安装矩阵（win+ubuntu）、pack 清单门禁、client 契约测试、nightly 本机 runner |
+| 8.1 | 长章节改抽取式节选（TF-IDF + df 带过滤），替代"前 80%+后 18%" |
+| 8.2-8.5 | cache.prune、报告保留 90 天 + DELETE 接口、Agent 工具补齐 `rerun/export/health`、`job.telemetry` |
+| 9.1 | 要点带页码回链（`（p.12）`），面板与报告都显示 |
+| 9.5 / 9.7 | Anki CSV（实测 46 张卡）+ `course.json`（`schema: dsh-course-assistant/course@1`） |
+
+### 本轮真实效果（L12，54 页 PDF）
+
+- 9 章；页码回链 **44/46**；可信度 verified/weak/suspect 混合（不再全 suspect）
+- 空回包重试后，offline 章节 **4/9 → 1/9**
+- 引文核对生效：`exact` 命中即 `verified`，伪造引文降为 `suspect`
+
+### 仍缺（下一轮）
+
+- **5.3 gold 集 + WindowDiff**：目前只有"章数/无同名章"断言，没有边界 F1
+- **5.1 完整 CTM**：只用了 `Tf` 字号，`q/Q` + `cm` 的 CTM 未乘进去
+- **§9 其余**：考纲覆盖率、BM25 课件问答、B 站分 P、增量课程、纯图页视觉
+- **未发布**：1.4.0 只在本地与 GitHub，`pnpm publish` 未跑
+- **已知问题**：L12 文本层混进 PDF 操作符（引文出现 `<<"error opening the file "< [1]`），
+  说明该文件 content-stream 解析有泄漏，值得单独查
+
+### 关键命令
+
+```powershell
+cd C:\Users\ThinkPad\Documents\deepseek-harness\default-workspace\course-assistant
+node tools/regress.mjs --unit --strict     # 任何机器
+node tools/regress.mjs --real              # 需要桌面课件
+node tools/client-contract.mjs             # client 槽位契约
+node tools/nightly-visual.mjs              # 真面板（需 web-token.txt）
+# 改代码后重载：plugin_manager remove_bundle → install_bundle（同一绝对路径）
+```
