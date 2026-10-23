@@ -28,6 +28,7 @@ import { selectPassages } from '../core/summarize.js'
 import { createStore } from '../core/store.js'
 import { __debug as ooxmlDebug } from '../core/ooxml.js'
 import { boundaryF1, evaluateDoc, windowDiff } from './segment-metrics.mjs'
+import { ask, buildIndex, indexFromPassages, search, serializePassages } from '../core/search.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
 
@@ -372,6 +373,28 @@ check('分章指标：windowdiff 与边界 F1 的已知用例', () => {
   assert(f1.f1 < 0.5, `边界错位应低分，实际 ${f1.f1}`)
   assert(windowDiff(ref, wrong) > 0, '错位应 windowdiff>0')
   return `same=${same.f1} shifted=${tolerant.f1} wrong=${f1.f1}`
+})
+
+check('课件问答：BM25 命中正确的章并给页码', () => {
+  const chapters = [
+    { index: 1, title: '第一章 供给与需求', pages: [1, 2, 3] },
+    { index: 2, title: '第二章 弹性', pages: [4, 5, 6] },
+    { index: 3, title: '第三章 市场结构', pages: [7, 8] },
+  ]
+  const texts = [
+    '需求定律指出价格上升需求量下降。均衡价格由供给与需求的交点决定。价格上限会制造短缺。',
+    '需求价格弹性等于需求量变化百分比除以价格变化百分比。弹性大于一称为富有弹性，必需品通常缺乏弹性。',
+    '完全竞争市场有大量卖者与同质产品。垄断市场只有一个卖者并存在进入壁垒。',
+  ]
+  const index = buildIndex(chapters, texts)
+  const hits = search(index, '需求价格弹性怎么算', 3)
+  assert(hits[0]?.chapter === 2, `应命中第 2 章，实际 ${hits[0]?.chapter}`)
+  assert(hits[0]?.page >= 4, `页码不对：${hits[0]?.page}`)
+  const round = indexFromPassages(serializePassages(index))
+  assert(search(round, '垄断市场的进入壁垒', 1)[0]?.chapter === 3, '序列化后检索结果不一致')
+  const miss = ask(index, '量子纠缠退相干')
+  assert(miss.answers.length === 0 && miss.hint, '无关问题应返回空与提示')
+  return `ch${hits[0].chapter} p${hits[0].page}`
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

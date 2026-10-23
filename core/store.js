@@ -197,6 +197,33 @@ export function createStore(dataDir) {
       } catch {}
     },
 
+    /** Passage list for local Q&A (kept out of the job JSON: it is large). */
+    saveSearchIndex(id, passages) {
+      try {
+        atomicWrite(join(jobsDir, `${id}.index.json`), JSON.stringify({ passages }))
+        return true
+      } catch {
+        return false
+      }
+    },
+
+    loadSearchIndex(id) {
+      try {
+        const data = JSON.parse(readFileSync(join(jobsDir, `${id}.index.json`), 'utf8'))
+        return Array.isArray(data?.passages) ? data.passages : null
+      } catch {
+        return null
+      }
+    },
+
+    /** A chapter rerun only replaces that chapter's passages. */
+    patchSearchIndex(id, chapterIndex, passages) {
+      const current = this.loadSearchIndex(id) || []
+      const next = [...current.filter((row) => row.chapter !== chapterIndex), ...passages]
+      next.sort((a, b) => a.chapter - b.chapter)
+      return this.saveSearchIndex(id, next)
+    },
+
     loadJob(id) {
       try {
         return JSON.parse(readFileSync(join(jobsDir, `${id}.json`), 'utf8'))
@@ -209,6 +236,9 @@ export function createStore(dataDir) {
     deleteJob(id, job = null) {
       try {
         rmSync(join(jobsDir, `${id}.json`), { force: true })
+      } catch {}
+      try {
+        rmSync(join(jobsDir, `${id}.index.json`), { force: true })
       } catch {}
       if (job) {
         for (const file of [job.reportPath, job.pdfPath]) {

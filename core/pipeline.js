@@ -19,6 +19,7 @@ import { assessQuality, describeQuality } from './quality.js'
 import { ocrPdf, ocrStatus } from './ocr.js'
 import { detectDomain } from './domain.js'
 import { evaluateSummary, describeConfidence, pointText, pointEvidence, normalizeForMatch } from './verify.js'
+import { buildIndex, serializePassages } from './search.js'
 
 /** Content-addressed OCR cache: reruns reuse the first run's pages byte-for-byte. */
 export function ocrCachePath(store, pdfPath, options = {}) {
@@ -522,6 +523,10 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     },
   })
   const reportPath = store.writeReport(outline.courseTitle || 'course', markdown)
+  // local Q&A needs the chapter bodies; keep them out of the job JSON
+  try {
+    store.saveSearchIndex?.(id, serializePassages(buildIndex(chapters, texts)))
+  } catch {}
   push({
     status: 'done',
     phase: 'done',
@@ -720,6 +725,10 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   job.chapters = (previous.chapters || []).map((c) => (c.index === (oldChapter.index ?? target.index) ? merged : c))
   if (!job.chapters.some((c) => c.index === merged.index)) job.chapters.push(merged)
   job.chapters.sort((a, b) => a.index - b.index)
+  // keep the local Q&A index in sync with the regenerated chapter
+  try {
+    store.patchSearchIndex?.(id, merged.index, serializePassages(buildIndex([merged], [target.text])))
+  } catch {}
 
   if (options?.withVideos !== false && bili) {
     push({ message: `重新检索第 ${target.index} 章的 B 站网课…`, progress: 0.6 })

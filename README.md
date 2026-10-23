@@ -116,6 +116,16 @@ OCR 结果按内容哈希缓存（`<dataDir>/ocr/<sha>.json`），重跑命中�
 `tools/segment-metrics.mjs` 算 windowdiff 与 ±1 页容差的边界 F1；`--real` 组会跑 gold 集，
 当前 `deck-800` 的 windowdiff 0.061、F1 0.947。
 
+**本地课件问答（零依赖）**：`core/search.js` 用 Node 内置 `Intl.Segmenter` 分词 + BM25，
+在章节正文里检索并返回**带章号与页码的原文片段**。入口两个：
+
+```bash
+GET /course-assistant/ask?id=<jobId>&q=需求价格弹性怎么定义
+# 或 Agent 工具：course_assistant { action: "ask", jobId, question }
+```
+
+检索索引在建报告时落到 `jobs/<id>.index.json`，章节重跑只替换该章的片段。
+
 **修掉一个长期的静默 bug**：`summarizeChapter` 之前只拿到章节元数据，**正文从未传给模型**
 （模型一直在只看标题写要点）。1.4.0 起正文显式传入，prompt 版本升到 v5。
 

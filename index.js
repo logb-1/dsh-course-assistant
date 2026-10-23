@@ -21,6 +21,7 @@ import { createBiliClient } from './core/bili.js'
 import { runPipeline, rerunChapter } from './core/pipeline.js'
 import { ocrAvailable, ocrStatus } from './core/ocr.js'
 import { pointText } from './core/verify.js'
+import { ask, indexFromPassages } from './core/search.js'
 import { markdownToDocx } from './core/docx.js'
 import { SUPPORTED } from './core/parser.js'
 
@@ -571,6 +572,16 @@ export function apply(ctx, config = {}) {
         })
       }
 
+      if (path === `${ROUTE}/ask` && req.method === 'GET') {
+        const id = url.searchParams.get('id')
+        const question = (url.searchParams.get('q') || '').trim()
+        if (!id || !question) return send(res, 400, { ok: false, reason: '缺少 id 或 q' })
+        const rows = store.loadSearchIndex(id)
+        if (!rows?.length) return send(res, 404, { ok: false, reason: '该任务还没有可检索的内容（先完整跑一次）' })
+        const { answers, hint } = ask(indexFromPassages(rows), question)
+        return send(res, 200, { ok: true, question, answers, hint })
+      }
+
       if (path === `${ROUTE}/library` && req.method === 'GET') {
         const rows = store.listJobs(20).map(({ id, mtime }) => {
           const job = jobs.get(id) || store.loadJob(id)
@@ -619,19 +630,21 @@ export function apply(ctx, config = {}) {
         '课程文件学习助手：把 .pptx/.pdf/.docx/.md/.txt 转成学习报告（课程目录、分章知识点与重难点、全课程总结，附录 B 站网课推荐）。' +
         'action=analyze 分析给定文件（files 为工作区路径，可多个）；action=status 查询任务进度（jobId）；' +
         'action=library 列出历史报告；action=rerun 重跑整份任务或某一章（jobId + 可选 chapterIndex）；' +
-        'action=export 导出报告（jobId + format=md|pdf）；action=health 查看模型/OCR/版本状态。',
+        'action=export 导出报告（jobId + format=md|pdf）；action=health 查看模型/OCR/版本状态；' +
+        'action=ask 用本地 BM25 在课件里检索并给出带页码的原文片段（jobId + question）。',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['analyze', 'status', 'library', 'rerun', 'export', 'health'], description: '操作类型' },
+          action: { type: 'string', enum: ['analyze', 'status', 'library', 'rerun', 'export', 'health', 'ask'], description: '操作类型' },
           files: {
             type: 'array',
             items: { type: 'string' },
             description: '课程文件路径（绝对路径或相对当前工作目录）',
           },
-          jobId: { type: 'string', description: 'status / rerun / export 使用的任务 id' },
+          jobId: { type: 'string', description: 'status / rerun / export / ask 使用的任务 id' },
           chapterIndex: { type: 'number', description: 'rerun 时只重跑这一章（从 1 开始），省略则整份重跑' },
-          format: { type: 'string', enum: ['md', 'pdf'], description: 'export 的格式，默认 md' },
+          format: { type: 'string', enum: ['md', 'pdf', 'csv', 'json'], description: 'export 的格式，默认 md' },
+          question: { type: 'string', description: 'ask 的问题（中文即可）' },
           withVideos: { type: 'boolean', description: '是否检索 B 站网课，默认 true' },
         },
         required: ['action'],
@@ -639,6 +652,12 @@ export function apply(ctx, config = {}) {
       },
       output: output({ type: 'object', additionalProperties: true }),
       async execute(args = {}) {
+        if (args.action === 'ask') {
+          const rows = store.loadSearchIndex(args.jobId)
+          if (!rows?.length) return { ok: false, reason: '该任务还没有可检索的内容（先完整跑一次）' }
+          const { answers, hint } = ask(indexFromPassages(rows), args.question || '')
+          return { ok: true, jobId: args.jobId, question: args.question || '', answers, hint }
+        }
         if (args.action === 'health') {
           return {
             ok: true,
@@ -652,7 +671,9 @@ export function apply(ctx, config = {}) {
         if (args.action === 'export') {
           const job = jobs.get(args.jobId) || (args.jobId && store.loadJob(args.jobId))
           if (!job) return { ok: false, reason: '任务不存在' }
-          const format = args.format === 'pdf' ? 'pdf' : 'md'
+          const format = ['pdf', 'csv', 'json'].includes(args.format) ? args.format : 'md'
+          if (format === 'csv') return { ok: true, jobId: job.id, format: 'csv', content: buildAnkiCsv(job) }
+          if (format === 'json') return { ok: true, jobId: job.id, format: 'json', content: buildCourseJson(job) }
           if (format === 'md') {
             const markdown = job.markdown || (job.reportPath ? readFileSync(job.reportPath, 'utf8') : '')
             if (!markdown) return { ok: false, reason: '报告尚未生成' }
