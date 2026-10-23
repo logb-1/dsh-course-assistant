@@ -38,11 +38,15 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 
 ## 安装 / 重载
 
+已在 npm 上发布：[`dsh-course-assistant`](https://www.npmjs.com/package/dsh-course-assistant)
+
 ```bash
+npm i dsh-course-assistant        # 或 pnpm add dsh-course-assistant
+# 也可以直接指向仓库目录：
 git clone https://github.com/logb-1/dsh-course-assistant.git
 ```
 
-然后用本 profile 的 `plugin_manager` 工具：`action: install_bundle`，`target` 指向**克隆下来的目录**
+装好后用本 profile 的 `plugin_manager` 工具：`action: install_bundle`，`target` 指向**包目录或克隆下来的目录**
 （绝对路径）。装好后刷新页面，左侧栏出现「课程助手」图标。
 
 - 只想试用不装：`node tools/smoke.mjs <课件文件>` 需要插件已装（它打的是宿主路由）。

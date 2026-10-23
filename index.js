@@ -162,7 +162,7 @@ export function apply(ctx, config = {}) {
       if (path === `${ROUTE}/health`) {
         return send(res, 200, {
           ok: true,
-          version: '1.1.0',
+          version: '1.1.1',
           llm: !!resolveLlm(),
           pdf: !!ctx.get('officeToPdf')?.convert,
           dataDir: store.dataDir,
