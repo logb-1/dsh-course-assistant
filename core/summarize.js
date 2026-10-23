@@ -7,7 +7,7 @@
  */
 import { anchorQuery } from './domain.js'
 import { pointText } from './verify.js'
-export const CHAPTER_PROMPT_VERSION = 4
+export const CHAPTER_PROMPT_VERSION = 5
 const MAX_CHAPTER_CHARS = 3600
 
 const SYSTEM = [
@@ -141,7 +141,10 @@ export function truncate(text, max = MAX_CHAPTER_CHARS) {
   return `${head}\n…（中间略）…\n${tail}`
 }
 
-export async function summarizeChapter({ llm, provider, model, courseTitle, chapter, outline, domain, signal }) {
+export async function summarizeChapter({ llm, provider, model, courseTitle, chapter, text, outline, domain, signal }) {
+  // `chapter` is metadata only: the body must be passed explicitly, otherwise the
+  // model summarises a title and every evidence quote fails to match.
+  const source = String(text ?? chapter.text ?? '')
   const outlineLine = outline?.length
     ? `全课程目录（只用于判断本章定位，不要复述）：${outline
         .slice(0, 24)
@@ -156,7 +159,7 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
     chapter.subs?.length ? `本节标题：${chapter.subs.slice(0, 8).join(' / ')}` : '',
     '以下是该章原文（已去页眉页脚）：',
     '"""',
-    truncate(chapter.text),
+    truncate(source),
     '"""',
     '请按系统提示的 JSON 结构输出。',
   ]
@@ -181,7 +184,7 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
   // A truncated/empty reply is repaired into a valid but hollow object: fill the
   // holes locally instead of publishing "本章未提取到有效要点".
   if (!parsed.key_points.length) {
-    const local = localSummary(chapter)
+    const local = localSummary({ ...chapter, text: source })
     parsed.key_points = local.key_points
     if (!parsed.important.length) parsed.important = []
     if (!parsed.difficult.length) parsed.difficult = []
@@ -267,7 +270,15 @@ export function localSummary(chapter) {
     if (!points.includes(line)) points.push(line)
   }
   const keywords = [...new Set((chapter.subs || []).map((s) => s.replace(/[：:（(].*$/, '')).filter((s) => s.length >= 2 && s.length <= 12))].slice(0, 3)
-  const picked = (points.length ? points : [chapter.title]).map((text) => ({ text, evidence: text }))
+  // no short line survived the filter (one long paragraph, OCR text): fall back to
+  // the first sentences so the chapter still gets要点 instead of only its title
+  const sentences = String(chapter.text || '')
+    .split(/[。；!?！？\n]+/)
+    .map(strip)
+    .filter((s) => s.length >= 10)
+    .map((s) => s.slice(0, 60))
+  const base = points.length ? points : sentences.length ? sentences.slice(0, 3) : [chapter.title]
+  const picked = base.map((text) => ({ text, evidence: text }))
   return {
     chapter: chapter.title,
     // the line came from the source verbatim, so it doubles as its own quote

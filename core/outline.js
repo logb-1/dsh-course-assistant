@@ -463,6 +463,9 @@ export function buildOutline(docs) {
  */
 function mergeCover(chapters, docs) {
   if (chapters.length < 2) return chapters
+  // only decks carry a title slide; for markdown/docx the first heading is a
+  // real chapter and folding it into the next one deletes it
+  if (!chapters.some((c) => (c.pages?.length || 0) > 0)) return chapters
   const first = chapters[0]
   const docTitle = docs[0]?.title || ''
   const sameTitle = docTitle && norm(first.title) === norm(docTitle)

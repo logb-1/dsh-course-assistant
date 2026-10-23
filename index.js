@@ -154,6 +154,85 @@ export function apply(ctx, config = {}) {
     return prepared
   }
 
+  /* ------------------------ heartbeat + zombie reaper ------------------------ */
+
+  const heartbeats = new Map()
+
+  const stopHeartbeat = (id) => {
+    const timer = heartbeats.get(id)
+    if (timer) clearInterval(timer)
+    heartbeats.delete(id)
+  }
+
+  /**
+   * A single chapter can run longer than a minute, so the beat cannot ride on
+   * push(): an independent timer renews it. `owner` lets a second Host instance
+   * on the same machine check pid liveness instead of declaring a false death.
+   */
+  const startHeartbeat = (id) => {
+    stopHeartbeat(id)
+    // stamp immediately: a crash inside the first interval must still look recent
+    const seedJob = jobs.get(id)
+    if (seedJob) {
+      seedJob.heartbeatAt = Date.now()
+      seedJob.owner = { pid: process.pid, hostname: hostname(), bootId: BOOT_ID }
+    }
+    const timer = setInterval(() => {
+      const job = jobs.get(id)
+      if (!job || job.status !== 'running') return stopHeartbeat(id)
+      job.heartbeatAt = Date.now()
+      job.owner = { pid: process.pid, hostname: hostname(), bootId: BOOT_ID }
+      try {
+        store.saveJob(job)
+      } catch {}
+    }, HEARTBEAT_MS)
+    timer.unref?.()
+    heartbeats.set(id, timer)
+  }
+
+  const finishJob = (id, job) => {
+    jobs.set(id, job)
+    stopHeartbeat(id)
+  }
+
+  /** Jobs left `running` by a dead process must not poll forever. */
+  function reapZombies() {
+    const now = Date.now()
+    let reaped = 0
+    for (const { id } of store.listJobs(300)) {
+      if (jobs.has(id)) continue
+      let job
+      try {
+        job = store.loadJob(id)
+      } catch {
+        continue
+      }
+      if (!job || job.status !== 'running') continue
+      const beat = Number(job.heartbeatAt || 0) || Date.parse(job.createdAt || '') || 0
+      if (now - beat <= STALE_MS) continue
+      const owner = job.owner
+      if (owner?.hostname === hostname() && Number.isInteger(owner.pid)) {
+        let alive = false
+        try {
+          process.kill(owner.pid, 0)
+          alive = true
+        } catch {}
+        if (alive) continue
+      }
+      const dead = {
+        ...job,
+        status: 'interrupted',
+        phase: 'interrupted',
+        error: '进程重启，任务已中断（可重新运行）',
+        interruptedAt: new Date().toISOString(),
+      }
+      jobs.set(id, dead)
+      store.saveJob(dead)
+      reaped += 1
+    }
+    return reaped
+  }
+
   async function makeJob(inputs, options) {
     const prepared = await prepareInputs(inputs)
     inputs = prepared
@@ -172,6 +251,8 @@ export function apply(ctx, config = {}) {
     }
     jobs.set(id, job)
     jobInputs.set(id, inputs)
+    store.touchUploads(inputs.map((f) => f.uploadId).filter(Boolean))
+    startHeartbeat(id)
     const llm = resolveLlm()
     runPipeline({
       id,
@@ -183,12 +264,17 @@ export function apply(ctx, config = {}) {
       },
     })
       .then((final) => {
-        jobs.set(id, final)
+        finishJob(id, final)
       })
       .catch((error) => {
-        const failed = { ...(jobs.get(id) || job), status: 'error', phase: 'error', error: String(error?.message || error), progress: 1 }
-        jobs.set(id, failed)
-        store.saveJob(failed)
+        finishJob(id, {
+          ...(jobs.get(id) || job),
+          status: 'error',
+          phase: 'error',
+          error: String(error?.message || error),
+          progress: 1,
+        })
+        store.saveJob(jobs.get(id))
         ctx.logger?.warn?.(`[course-assistant] job ${id} failed: ${error?.stack || error}`)
       })
     return job
@@ -212,6 +298,8 @@ export function apply(ctx, config = {}) {
     }
     jobs.set(id, seed)
     jobInputs.set(id, inputs)
+    store.touchUploads(inputs.map((f) => f.uploadId).filter(Boolean))
+    startHeartbeat(id)
     rerunChapter({
       id,
       inputs,
@@ -222,15 +310,37 @@ export function apply(ctx, config = {}) {
       emit: (next) => jobs.set(id, next),
     })
       .then((final) => {
-        jobs.set(id, final)
+        finishJob(id, final)
       })
       .catch((error) => {
-        const failed = { ...seed, status: 'error', phase: 'error', error: String(error?.message || error), progress: 1 }
-        jobs.set(id, failed)
-        store.saveJob(failed)
+        finishJob(id, { ...seed, status: 'error', phase: 'error', error: String(error?.message || error), progress: 1 })
+        store.saveJob(jobs.get(id))
         ctx.logger?.warn?.(`[course-assistant] rerun ${id} failed: ${error?.stack || error}`)
       })
     return seed
+  }
+
+  /**
+   * Recover the inputs of a job after a restart: the in-memory map is gone, but
+   * job.inputs carries dataDir-relative paths. A pruned upload is reported by
+   * name (410), never as a generic "task not found".
+   */
+  function restoreInputs(jobId) {
+    const previous = jobs.get(jobId) || store.loadJob(jobId)
+    const rows = previous?.inputs
+    if (!Array.isArray(rows) || !rows.length) return { error: '原任务缺少输入清单（旧版本任务），请重新拖入文件' }
+    const inputs = []
+    for (const row of rows) {
+      const path = isAbsolute(row.path) ? row.path : join(store.dataDir, row.path)
+      if (!existsSync(path)) {
+        return {
+          error: `上传文件已过期（保留 ${config.keepUploadsDays ?? 7} 天）：${row.name}，请重新拖入`,
+          missing: row.name,
+        }
+      }
+      inputs.push({ path, name: row.name, uploadId: row.uploadId })
+    }
+    return { inputs, previous }
   }
 
   async function exportPdf(job) {
@@ -267,7 +377,7 @@ export function apply(ctx, config = {}) {
       if (path === `${ROUTE}/health`) {
         return send(res, 200, {
           ok: true,
-          version: '1.3.0',
+          version: PKG.version,
           llm: !!resolveLlm(),
           pdf: !!ctx.get('officeToPdf')?.convert,
           ocr: ocrAvailable(),
@@ -304,7 +414,7 @@ export function apply(ctx, config = {}) {
           if (!saved || !existsSync(saved.path)) {
             return send(res, 400, { ok: false, reason: `上传文件已失效：${id}` })
           }
-          inputs.push({ path: saved.path, name: saved.name })
+          inputs.push({ path: saved.path, name: saved.name, uploadId: saved.id })
         }
         if (inputs.length > 12) return send(res, 400, { ok: false, reason: '一次最多处理 12 个文件' })
         const job = await makeJob(inputs, optionsOf(body.options))
@@ -313,8 +423,16 @@ export function apply(ctx, config = {}) {
 
       if (path === `${ROUTE}/rerun` && req.method === 'POST') {
         const body = JSON.parse((await readBody(req, 256 * 1024)).toString('utf8') || '{}')
-        const inputs = jobInputs.get(body.jobId)
-        if (!inputs?.length) return send(res, 404, { ok: false, reason: '原任务的上传文件已失效，请重新拖入文件' })
+        let inputs = jobInputs.get(body.jobId)
+        if (!inputs?.length) {
+          // after a restart the in-memory map is empty: rebuild from the manifest
+          const restored = restoreInputs(body.jobId)
+          if (restored.error) {
+            return send(res, restored.missing ? 410 : 404, { ok: false, reason: restored.error })
+          }
+          inputs = restored.inputs
+          jobInputs.set(body.jobId, inputs)
+        }
         const chapterIndex = Number(body.chapterIndex)
         if (chapterIndex > 0) {
           const previous = jobs.get(body.jobId) || store.loadJob(body.jobId)
@@ -382,6 +500,15 @@ export function apply(ctx, config = {}) {
     disposers.push(ctx.webServer.register({ kind: 'prefix', path: ROUTE, handler: routeHandler }))
   } catch (error) {
     ctx.logger?.warn?.(`[course-assistant] route unavailable: ${error}`)
+  }
+
+  // A previous process may have died mid-run; mark those jobs before the panel
+  // starts polling them (otherwise it polls a `running` job forever).
+  try {
+    const reaped = reapZombies()
+    if (reaped) ctx.logger?.info?.(`[course-assistant] ${reaped} interrupted job(s) marked as zombie`)
+  } catch (error) {
+    ctx.logger?.warn?.(`[course-assistant] zombie scan failed: ${error.message}`)
   }
 
   /* -------------------------------- tools -------------------------------- */
