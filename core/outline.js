@@ -66,9 +66,16 @@ function chaptersFromPages(doc) {
   }
 
   // 2) chapter-like slide titles (第3章 / Chapter 3)
+  // A header repeated on every page must NOT open a chapter per page: only a
+  // title that differs from the previous one marks a boundary.
   const starts = []
+  let lastTitle = ''
   pages.forEach((p, i) => {
-    if (CHAPTER_RE.test(norm(p.title))) starts.push(i)
+    const title = norm(p.title)
+    if (CHAPTER_RE.test(title) && title !== lastTitle) {
+      starts.push(i)
+      lastTitle = title
+    }
   })
   if (starts.length >= 2) {
     const groups = []
@@ -360,6 +367,47 @@ function chaptersFromPdfOutline(doc) {
 
 /* -------------------------------- merge -------------------------------- */
 
+const titleKey = (title) => norm(String(title || '')).replace(/^[#\s]+/, '').toLowerCase()
+
+/**
+ * A header repeated on every page (or a deck whose slides share a title) yields
+ * N identically named chapters. Adjacent duplicates are one chapter; a duplicate
+ * that appears later keeps its own chapter but gets its page range appended, so
+ * "（续）" is never needed and the reader can tell them apart.
+ */
+function mergeSameTitle(chapters) {
+  if (!chapters.length) return chapters
+  // a real "same chapter" repeats its title on every page; a chunk that merely
+  // starts with a repeated header but contains another heading must stay apart
+  const uniform = (ch) => {
+    const key = titleKey(ch.title)
+    return (ch.subs || []).length > 0 && (ch.subs || []).every((s) => titleKey(s) === key)
+  }
+  const merged = []
+  for (const chapter of chapters) {
+    const prev = merged[merged.length - 1]
+    if (prev && titleKey(prev.title) === titleKey(chapter.title) && uniform(prev) && uniform(chapter)) {
+      prev.text = cap(`${prev.text}\n\n${chapter.text}`)
+      prev.subs = [...new Set([...(prev.subs || []), ...(chapter.subs || [])])]
+      prev.pages = [...(prev.pages || []), ...(chapter.pages || [])]
+      continue
+    }
+    merged.push({ ...chapter, subs: [...(chapter.subs || [])], pages: [...(chapter.pages || [])] })
+  }
+  const seen = new Map()
+  for (const chapter of merged) {
+    const key = titleKey(chapter.title)
+    const count = (seen.get(key) || 0) + 1
+    seen.set(key, count)
+    if (count > 1) {
+      const pages = chapter.pages || []
+      const suffix = pages.length ? `（p${Math.min(...pages)}–${Math.max(...pages)}）` : `（${count}）`
+      chapter.title = `${chapter.title}${suffix}`
+    }
+  }
+  return merged
+}
+
 function mergeSmall(chapters) {
   if (chapters.length <= 1) return chapters
   const out = []
@@ -438,6 +486,10 @@ export function buildOutline(docs) {
     }
     if (!chapters && doc.text) chapters = chaptersFromText(doc.text, doc.title)
     if (!chapters) chapters = chaptersFromText('', doc.title)
+    // merge duplicates inside this document, before the multi-document prefix:
+    // otherwise two decks that happen to share a last/first chapter title merge
+    // across files
+    chapters = mergeSameTitle(chapters)
     if (docs.length > 1) {
       for (const ch of chapters) ch.title = `${doc.title}｜${ch.title}`
     }

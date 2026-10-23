@@ -233,6 +233,26 @@ check('单章重跑：只换这一章，其他章节与报告保持一致', asyn
   }
 })
 
+check('同名章节：重复页眉合并且不出现同名', () => {
+  const same = Array.from({ length: 12 }, (_, i) => ({
+    index: i + 1,
+    title: '第 3 章 指针与数组',
+    text: '幻灯内容 '.repeat(20),
+  }))
+  const one = buildOutline([{ kind: 'pptx', title: '测试课件', pages: same, blocks: [] }])
+  assert(one.chapters.length === 1, `重复页眉切出了 ${one.chapters.length} 章`)
+  const mixed = [
+    ...Array.from({ length: 3 }, (_, i) => ({ index: i + 1, title: '第 1 章 甲', text: '甲内容 '.repeat(30) })),
+    ...Array.from({ length: 3 }, (_, i) => ({ index: i + 4, title: '第 2 章 乙', text: '乙内容 '.repeat(30) })),
+    ...Array.from({ length: 3 }, (_, i) => ({ index: i + 7, title: '第 1 章 甲', text: '甲补充 '.repeat(30) })),
+  ]
+  const two = buildOutline([{ kind: 'pptx', title: '测试2', pages: mixed, blocks: [] }])
+  const titles = two.chapters.map((c) => c.title)
+  assert(new Set(titles).size === titles.length, `出现同名章：${titles.join(' | ')}`)
+  assert(titles.some((t) => /p\d+–\d+/.test(t)), `非相邻同名没有付页码：${titles.join(' | ')}`)
+  return `${one.chapters.length} 章 / ${two.chapters.length} 章带区间`
+})
+
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */
 
 function makePdf(ops) {
