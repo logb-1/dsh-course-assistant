@@ -242,14 +242,17 @@ G  gold 集 + NLTK windowdiff 的页级改造
 
 ### 仍缺（下一轮）
 
-- **5.3 gold 集 + WindowDiff**：目前只有"章数/无同名章"断言，没有边界 F1
-- **5.1 完整 CTM**：只用了 `Tf` 字号，`q/Q` + `cm` 的 CTM 未乘进去
+- ~~5.3 gold 集 + WindowDiff~~：**已完成**。`tools/gold/deck-800.json`（边界取自课件自己的 § 编号）
+  + `tools/segment-metrics.mjs`（windowdiff / ±1 页边界 F1）；`--real` 组门禁 windowdiff ≤0.25、F1 ≥0.85，
+  当前 **windowdiff 0.061 / F1 0.947（章 10 vs gold 11，封面并入）**
+- ~~5.1 完整 CTM~~：**已完成**。`q/Q` 维护 CTM，有效字号 = `Tf × √|det(Tm×CTM)|`；新增合成 PDF 断言
 - **§9 其余**：考纲覆盖率、BM25 课件问答、B 站分 P、增量课程、纯图页视觉
 - **未发布**：1.4.0 只在本地与 GitHub，`pnpm publish` 未跑
-- **推送状态**：本地 `main` = 7d776c1 已提交；本次收尾时 GitHub 连不上（`Connection reset` /
-  443 超时），恢复后执行 `git push origin main` 与 `git push origin wip/review-v1`
-- **已知问题**：L12 文本层混进 PDF 操作符（引文出现 `<<"error opening the file "< [1]`），
-  说明该文件 content-stream 解析有泄漏，值得单独查
+- **推送状态**：本地 `main` = f70b982（含 G/CTM）；GitHub 443 仍连不上
+  （`Failed to connect to github.com:443`），恢复后执行
+  `git push origin main` 与 `git push origin wip/review-v1`
+- **已知问题**：L12 的文本层混进 PDF 操作符/截断代码（页面标题形如 `#includ fstrea`、
+  `cou << (m/n)< en`），所以它的 gold 不能用标题生成；该文件的 content-stream 解析值得单独查
 
 ### 关键命令
 
