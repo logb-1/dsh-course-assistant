@@ -9,3 +9,6 @@ node_modules/
 *.tmp
 *.log
 pnpm-lock.yaml
+# playwright output (the baseline snapshots under tests/ ARE committed)
+test-results/
+playwright-report/

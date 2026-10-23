@@ -562,7 +562,13 @@ function contentToText(content, fonts) {
   const lex = new Lexer(content)
   let font = null
   let fontSize = 12
-  let out = ''
+  const lines = []
+  let frags = []
+  let fragText = ''
+  let fragX0 = null
+  let fragX1 = null
+  let lineY = 0
+  let lineSize = 12
   let x = 0
   let y = 0
   let prevY = null
@@ -578,17 +584,54 @@ function contentToText(content, fonts) {
   // glyph-level PDFs jitter the baseline by a fraction of a point; only a move
   // of roughly half a line really is a new line.
   const dyLimit = () => Math.max(2, fontSize * 0.55)
+  // a gap wider than ~3 em is a column break, not a word space: keep the pieces
+  // apart so the column detector can see them (they are re-joined when the page
+  // turns out to be single-column)
+  const gapLimit = () => fontSize * 3
+  const pushFrag = () => {
+    if (fragText.trim()) frags.push({ text: fragText, x0: fragX0 ?? 0, x1: fragX1 ?? fragX0 ?? 0 })
+    fragText = ''
+    fragX0 = null
+    fragX1 = null
+  }
+  const flush = () => {
+    pushFrag()
+    if (frags.length) {
+      lines.push({
+        text: frags.map((f) => f.text).join(' '),
+        x0: frags[0].x0,
+        x1: frags[frags.length - 1].x1,
+        y: lineY,
+        size: lineSize,
+        fragments: frags,
+      })
+    }
+    frags = []
+  }
   const newline = () => {
-    if (out && !out.endsWith('\n')) out += '\n'
+    flush()
     lastEndX = null
   }
   const show = (raw) => {
     const t = decodeString(raw, font)
     if (!t) return
-    // a real x gap means a word break; glyph-by-glyph PDFs must not get spaces
-    if (lastEndX !== null && x - lastEndX > fontSize * 0.25) out += ' '
-    out += t
+    const isNewFrag = fragX0 === null
+    if (isNewFrag) {
+      fragX0 = x
+      if (!frags.length && !fragText) {
+        lineY = y
+        lineSize = fontSize
+      }
+    } else if (lastEndX !== null && x - lastEndX > gapLimit()) {
+      pushFrag()
+      fragX0 = x
+    } else if (lastEndX !== null && x - lastEndX > fontSize * 0.25) {
+      // a real x gap means a word break; glyph-by-glyph PDFs must not get spaces
+      fragText += ' '
+    }
+    fragText += t
     lastEndX = x + width(t)
+    fragX1 = lastEndX
   }
   for (;;) {
     const tok = lex.next()
@@ -656,7 +699,117 @@ function contentToText(content, fonts) {
     }
     stack.length = 0
   }
+  flush()
+  return lines
+}
+
+/* ---------------------------- column detection ---------------------------- */
+
+/**
+ * Two-column papers and textbooks store text in visual order per column, so a
+ * naive stream walk reads "left line 1, right line 1, left line 2, …".
+ *
+ * A page is treated as two columns when a vertical gutter exists that most
+ * lines avoid: ≥3 lines wholly left of it, ≥3 wholly right, and few lines
+ * crossing it. Wide lines (titles, full-width figures) flush the columns and
+ * stay in document order, so sections are never merged across the gutter.
+ */
+const MIN_COLUMN_LINES = 8
+const GUTTER_MIN = 0.34
+const GUTTER_MAX = 0.66
+const GUTTER_STEP = 0.02
+
+function detectGutter(lines, pageWidth) {
+  if (!pageWidth || lines.length < MIN_COLUMN_LINES) return null
+  let best = null
+  for (let g = GUTTER_MIN; g <= GUTTER_MAX + 1e-9; g += GUTTER_STEP) {
+    let crossing = 0
+    let left = 0
+    let right = 0
+    for (const line of lines) {
+      const x0 = line.x0 / pageWidth
+      const x1 = line.x1 / pageWidth
+      if (x0 < g - GUTTER_STEP && x1 > g + GUTTER_STEP) crossing += 1
+      else if (x1 <= g) left += 1
+      else if (x0 >= g) right += 1
+    }
+    if (left < 3 || right < 3) continue
+    if (crossing > lines.length * 0.18) continue
+    const score = Math.min(left, right) / lines.length - crossing / lines.length
+    if (!best || score > best.score) best = { gutter: g, score }
+  }
+  return best && best.score > 0.15 ? best.gutter : null
+}
+
+const columnOrder = (list) => [...list].sort((a, b) => b.y - a.y || a.x0 - b.x0)
+
+/** Fragments that share a baseline are one visual line again once ordered. */
+function mergeSameLine(fragments) {
+  const out = []
+  for (const f of fragments) {
+    const last = out[out.length - 1]
+    if (last && Math.abs(last.y - f.y) < 1) last.text += ` ${f.text}`
+    else out.push({ text: f.text, y: f.y })
+  }
+  return out.filter((line) => line.text.trim())
+}
+
+function orderByColumns(lines, pageWidth) {
+  if (!pageWidth) return lines
+  const fragments = []
+  for (const line of lines) {
+    if (line.fragments?.length) {
+      for (const f of line.fragments) fragments.push({ text: f.text, x0: f.x0, x1: f.x1, y: line.y })
+    } else {
+      fragments.push({ text: line.text, x0: line.x0, x1: line.x1, y: line.y })
+    }
+  }
+  const gutter = detectGutter(fragments, pageWidth)
+  if (!gutter) return lines
+  const out = []
+  let left = []
+  let right = []
+  const flushColumns = () => {
+    for (const bucket of [left, right]) {
+      if (bucket.length) out.push(...mergeSameLine(columnOrder(bucket)))
+    }
+    left = []
+    right = []
+  }
+  for (const f of fragments) {
+    const x0 = f.x0 / pageWidth
+    const x1 = f.x1 / pageWidth
+    if (x0 < gutter - GUTTER_STEP && x1 > gutter + GUTTER_STEP) {
+      flushColumns()
+      out.push({ text: f.text, y: f.y })
+    } else if (x1 <= gutter) {
+      left.push(f)
+    } else if (x0 >= gutter) {
+      right.push(f)
+    } else {
+      out.push({ text: f.text, y: f.y })
+    }
+  }
+  flushColumns()
   return out
+}
+
+/** /MediaBox may live on the page or be inherited from any /Pages parent. */
+function pageWidthOf(objects, page) {
+  let node = page
+  for (let depth = 0; node && depth < 6; depth += 1) {
+    const box = dictValue(node.dict || '', 'MediaBox')
+    if (box) {
+      const nums = (box.match(/-?\d+(?:\.\d+)?/g) || []).map(Number)
+      if (nums.length >= 4) {
+        const w = Math.abs(nums[2] - nums[0])
+        if (w > 0) return w
+      }
+    }
+    const parent = dictRef(node.dict || '', 'Parent')
+    node = parent?.ref ? objects.get(parent.ref) : null
+  }
+  return 0
 }
 
 /* -------------------------------- pages -------------------------------- */
@@ -757,9 +910,14 @@ function pageText(objects, page) {
       }
     }
   }
-  const text = refs.map((r) => collectStream(objects, r)).join('\n')
-  if (!text) return ''
-  return cleanup(contentToText(text, fonts))
+  const collected = []
+  for (const ref of refs) {
+    const content = collectStream(objects, ref)
+    if (content) collected.push(...contentToText(content, fonts))
+  }
+  if (!collected.length) return ''
+  const ordered = orderByColumns(collected, pageWidthOf(objects, page))
+  return cleanup(ordered.map((line) => line.text).join('\n'))
 }
 
 function cleanup(text) {

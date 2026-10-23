@@ -65,6 +65,40 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 | 同名源文件择优 | 同时拖 `x.pptx` 与 `x.pdf` 时自动用 pptx，并提示跳过了哪个 |
 | 要点重合计分 | 每章要点与原文算 bigram 重合度，低于 30% 标「可能有推断成分」 |
 
+## 1.3.0 新增：可换的 OCR、双栏阅读顺序、单章重跑
+
+**OCR 引擎抽象**：`core/ocr.js` 变成注册表，引擎只需实现
+`{ id, label, available(), recognize(pdfPath, opts) }`（约 30 行接口）。
+
+| 引擎 | 平台 | 说明 |
+|---|---|---|
+| `windows` | Windows | WinRT 渲染 + Windows OCR(zh-CN)，开箱可用，~1 秒/页 |
+| `rapidocr` | 跨平台 | `pip install rapidocr_onnxruntime pymupdf` 后可用；渲染用 PyMuPDF，识别用 RapidOCR |
+
+`health.ocrEngines` 逐个报可用性，界面上不装也能用（只是列出来 `available: false`）。
+强制指定：`ocrEngine: 'rapidocr'`，Python 路径用 `ocrPython` 覆盖。
+
+**双栏排版按栏读**：论文/教材型 PDF 的内容流是「左一行、右一行」交错存的，直接顺读会把两栏串成一句话。
+现在按每行/每段的 x 区间找一个「几乎没人跨过」的纵向沟槽（≥3 行在左、≥3 行在右、跨栏行 <18%），
+命中就按栏重排，整页宽的行（标题、通栏图注）先冲掉两栏缓冲、保持文档顺序。
+单栏页面不受影响（检测不命中就原样输出）。
+
+**单章重跑 + 差异视图**：每章右上角「重跑本章」→ `POST /rerun { jobId, chapterIndex }`。
+
+- 只重算这一章（缓存读取刻意绕过），其余章节、课程总结、系列课全部沿用
+- 重跑后重建整份报告，报告里其他章节不受影响
+- 面板就地显示差异：`+ [要点] …` 绿色新增、`− [重点] …` 红色删除，另列新增关键词
+- 差异按「要点/重点/难点 + 去空白后的文本」比对，换了说法才算变化
+
+**视觉回归**：`tests/visual.spec.mjs` + `playwright.config.mjs`，用系统 Edge（`channel: 'msedge'`，不下载 Chromium）：
+
+```bash
+pnpm exec playwright test                     # 对比基线
+pnpm exec playwright test --update-snapshots  # 刷新基线
+```
+
+跳转地址默认 `http://127.0.0.1:54763`，用 `DSH_WEB_URL` 覆盖；GUI 需要 `dsh web` 打印的带 token 地址。
+
 ## 安装 / 重载
 
 前置条件两条：**装好 DeepSeek Harness**；profile 里**配好一个可用模型**（缺失时会退回本地抽取摘要）。
@@ -216,10 +250,11 @@ course-assistant/
 | Host 路由 | `GET /course-assistant/health` → 200 `{llm:true,pdf:true}`；`upload`→`run`→`job`→`report(md)`→`report(pdf)` 全链路通过（`tools/smoke.mjs`） |
 | Client 槽位 | `main` key `course-assistant` active；`sidebar.panellist` id `course-assistant` active；`conversation.composer.dock` id `course-assistant-dock` active |
 | 语法 | `node --check` 全部通过（index.js / client.js / core/*.js） |
+| 回归 | `node tools/regress.mjs` 12 项断言全绿（含双栏重排、单栏不变、单章差异） |
 | 解析 | pptx 34 页→10 章；pdf 5 页→11 章；docx 无标题样式→9 章（编号推断）；md→11 章 |
 | 报告 | 三份示例的附录两表均非空；总结合格（≤300 字） |
 | PDF 导出 | 三个样本均生成 PDF，文字层可回读（自写解析器 round-trip） |
-| **渲染效果** | **未验证**：无浏览器控制，只能证明模块加载、槽位注册与接口连通，不能证明实际视觉 |
+| **渲染效果** | `tests/visual.spec.mjs`：Playwright + 系统 Edge 打开面板、断言结构与基线截图（`DSH_WEB_URL` 需带 `dsh web` 的 token） |
 
 ## 已知限制
 

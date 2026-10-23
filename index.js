@@ -15,8 +15,8 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { createStore, resolveDataDir } from './core/store.js'
 import { createBiliClient } from './core/bili.js'
-import { runPipeline } from './core/pipeline.js'
-import { ocrAvailable } from './core/ocr.js'
+import { runPipeline, rerunChapter } from './core/pipeline.js'
+import { ocrAvailable, ocrStatus } from './core/ocr.js'
 import { markdownToDocx } from './core/docx.js'
 import { SUPPORTED } from './core/parser.js'
 
@@ -77,6 +77,8 @@ export function apply(ctx, config = {}) {
     concurrency: Math.max(1, Math.min(5, Number(raw.concurrency) || Number(config.concurrency) || 4)),
     ocr: raw.ocr === true,
     ocrMaxPages: Number(raw.ocrMaxPages) || Number(config.ocrMaxPages) || 60,
+    ocrEngine: raw.ocrEngine || config.ocrEngine || undefined,
+    ocrPython: raw.ocrPython || config.ocrPython || undefined,
     domain: config.domain || raw.domain || undefined,
   })
 
@@ -178,6 +180,45 @@ export function apply(ctx, config = {}) {
     return job
   }
 
+  /**
+   * Rerun one chapter of a finished job: the parse + outline are replayed to
+   * recover that chapter's text, the summary is regenerated with the cache
+   * bypassed, and the report is rebuilt. Everything else is carried over.
+   */
+  async function makeRerunJob(previous, inputs, chapterIndex, options) {
+    const id = randomUUID().slice(0, 8)
+    const seed = {
+      ...previous,
+      id,
+      status: 'running',
+      phase: 'rerun',
+      message: `重跑第 ${chapterIndex} 章…`,
+      progress: 0.05,
+      error: '',
+    }
+    jobs.set(id, seed)
+    jobInputs.set(id, inputs)
+    rerunChapter({
+      id,
+      inputs,
+      previous,
+      chapterIndex,
+      options,
+      deps: { store, bili, llm: resolveLlm() },
+      emit: (next) => jobs.set(id, next),
+    })
+      .then((final) => {
+        jobs.set(id, final)
+      })
+      .catch((error) => {
+        const failed = { ...seed, status: 'error', phase: 'error', error: String(error?.message || error), progress: 1 }
+        jobs.set(id, failed)
+        store.saveJob(failed)
+        ctx.logger?.warn?.(`[course-assistant] rerun ${id} failed: ${error?.stack || error}`)
+      })
+    return seed
+  }
+
   async function exportPdf(job) {
     if (job.pdfPath && existsSync(job.pdfPath)) return job.pdfPath
     const office = ctx.get('officeToPdf')
@@ -212,10 +253,11 @@ export function apply(ctx, config = {}) {
       if (path === `${ROUTE}/health`) {
         return send(res, 200, {
           ok: true,
-          version: '1.2.0',
+          version: '1.3.0',
           llm: !!resolveLlm(),
           pdf: !!ctx.get('officeToPdf')?.convert,
           ocr: ocrAvailable(),
+          ocrEngines: await ocrStatus(),
           dataDir: store.dataDir,
           supported: [...SUPPORTED, '.ppt', '.doc', '.xls'],
           jobs: jobs.size,
@@ -259,6 +301,14 @@ export function apply(ctx, config = {}) {
         const body = JSON.parse((await readBody(req, 256 * 1024)).toString('utf8') || '{}')
         const inputs = jobInputs.get(body.jobId)
         if (!inputs?.length) return send(res, 404, { ok: false, reason: '原任务的上传文件已失效，请重新拖入文件' })
+        const chapterIndex = Number(body.chapterIndex)
+        if (chapterIndex > 0) {
+          const previous = jobs.get(body.jobId) || store.loadJob(body.jobId)
+          if (!previous) return send(res, 404, { ok: false, reason: '原任务不存在' })
+          if (!(previous.chapters || []).length) return send(res, 400, { ok: false, reason: '原任务还没有章节目录，先完整跑一次' })
+          const job = await makeRerunJob(previous, inputs, chapterIndex, optionsOf(body.options))
+          return send(res, 200, { ok: true, jobId: job.id, chapterIndex })
+        }
         const job = await makeJob(inputs, optionsOf(body.options))
         return send(res, 200, { ok: true, jobId: job.id })
       }

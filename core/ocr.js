@@ -1,128 +1,89 @@
 /**
- * Windows OCR bridge for scanned / glyph-coded PDFs.
+ * OCR engine registry.
  *
- * Rendering and recognition both happen in a PowerShell helper (`ocr.ps1`) that
- * talks to WinRT: Windows.Data.Pdf renders a page, Windows.Media.Ocr reads it
- * with the installed zh-CN language pack. No extra binary, no network.
+ * An engine is a plain object:
+ *   {
+ *     id: string,                  // stable id used in config/health
+ *     label: string,               // shown in the panel
+ *     platform: 'win32' | 'any',
+ *     available(): boolean | Promise<boolean>,
+ *     availableSync?(): boolean,   // optional cheap answer for sync callers
+ *     recognize(pdfPath, options): Promise<Array<{index, title?, text}>>,
+ *   }
  *
- * Windows-only by design. Other platforms report the capability as absent and
- * the caller falls back to "use the source .pptx/.docx".
+ * Engines never normalise text themselves: the registry does it once, so a new
+ * engine only has to return raw lines. Adding one is `registerOcrEngine(...)`.
  */
-import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import windowsEngine from './ocr-windows.js'
+import rapidocrEngine from './ocr-rapidocr.js'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-const SCRIPT = join(HERE, 'ocr.ps1')
+const engines = new Map()
+
+export function registerOcrEngine(engine) {
+  if (!engine?.id || typeof engine.recognize !== 'function') throw new Error('OCR 引擎缺少 id 或 recognize()')
+  engines.set(engine.id, engine)
+  return engine
+}
+
+registerOcrEngine(windowsEngine)
+registerOcrEngine(rapidocrEngine)
+
+/** Synchronous view: only engines that can answer without I/O report `true`. */
+export function listOcrEngines() {
+  return [...engines.values()].map((e) => ({
+    id: e.id,
+    label: e.label,
+    platform: e.platform || 'any',
+    available: !!e.availableSync?.(),
+  }))
+}
+
+/** Async view for /health: probes engines that need one. */
+export async function ocrStatus() {
+  const rows = []
+  for (const e of engines.values()) {
+    let available = false
+    try {
+      available = !!(await e.available())
+    } catch {
+      available = false
+    }
+    rows.push({ id: e.id, label: e.label, platform: e.platform || 'any', available })
+  }
+  return rows
+}
 
 export function ocrAvailable() {
-  if (process.platform !== 'win32') return false
-  return true
+  return listOcrEngines().some((e) => e.available)
+}
+
+export function pickOcrEngine(preferred) {
+  if (preferred && engines.has(preferred)) return engines.get(preferred)
+  return [...engines.values()].find((e) => e.availableSync?.()) || null
 }
 
 /**
  * @param {string} pdfPath absolute path
- * @param {{maxPages?:number, onProgress?:(done:number,total:number)=>void, signal?:AbortSignal, width?:number}} options
+ * @param {{engine?:string, maxPages?:number, width?:number, onProgress?:Function, signal?:AbortSignal}} options
  * @returns {Promise<Array<{index:number,title:string,text:string}>>}
  */
-export function ocrPdf(pdfPath, options = {}) {
-  const maxPages = Math.max(1, Math.min(400, options.maxPages || 60))
-  const scratch = mkdtempSync(join(tmpdir(), 'dsh-ocr-'))
-  mkdirSync(scratch, { recursive: true })
-  // WinRT's GetFileFromPathAsync only accepts native Windows separators
-  const nativePdf = String(pdfPath).replace(/\//g, '\\')
-  const nativeScratch = scratch.replace(/\//g, '\\')
-
-  return new Promise((resolve, reject) => {
-    const args = [
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      SCRIPT,
-      '-Pdf',
-      nativePdf,
-      '-OutDir',
-      nativeScratch,
-      '-First',
-      '0',
-      '-Last',
-      String(maxPages - 1),
-      '-Width',
-      String(options.width || 1600),
-    ]
-    const child = spawn('powershell.exe', args, { windowsHide: true })
-    let buffer = ''
-    let stderr = ''
-    const pages = []
-    let total = 0
-
-    const handleLine = (line) => {
-      const trimmed = line.trim()
-      if (!trimmed) return
-      let msg
-      try {
-        msg = JSON.parse(trimmed)
-      } catch {
-        return
-      }
-      if (msg.error) {
-        reject(new Error(`OCR 引擎不可用：${msg.error}`))
-        return
-      }
-      if (typeof msg.pageCount === 'number') {
-        total = Math.min(msg.pageCount, maxPages)
-        return
-      }
-      if (typeof msg.page === 'number') {
-        const text = normalize(msg.text || '')
-        // the first meaningful line is the best available page title for a slide
-        const title = (text.split('\n')[0] || '').slice(0, 40)
-        pages.push({ index: msg.page, title, text })
-        options.onProgress?.(pages.length, total || pages.length)
-      }
-    }
-
-    child.stdout.on('data', (chunk) => {
-      buffer += chunk.toString('utf8')
-      let index
-      while ((index = buffer.indexOf('\n')) >= 0) {
-        handleLine(buffer.slice(0, index))
-        buffer = buffer.slice(index + 1)
-      }
+export async function ocrPdf(pdfPath, options = {}) {
+  const engine = options.engine && engines.has(options.engine) ? engines.get(options.engine) : pickOcrEngine(options.engine)
+  if (!engine) throw new Error('没有可用的 OCR 引擎（Windows 用内置 WinRT，其他平台装 rapidocr_onnxruntime）')
+  const pages = await engine.recognize(pdfPath, options)
+  return (pages || [])
+    .map((p, i) => {
+      const text = normalizeOcrText(p.text || '')
+      return { index: p.index ?? i + 1, title: p.title || (text.split('\n')[0] || '').slice(0, 40), text }
     })
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString('utf8')
-    })
-    child.on('error', (error) => {
-      rmSync(scratch, { recursive: true, force: true })
-      reject(error)
-    })
-    child.on('close', (code) => {
-      if (buffer.trim()) handleLine(buffer)
-      rmSync(scratch, { recursive: true, force: true })
-      if (code !== 0 && !pages.length) {
-        reject(new Error(`OCR 失败（exit ${code}）：${stderr.slice(-300) || '无输出'}`))
-        return
-      }
-      resolve(pages.filter((p) => p.text.trim().length > 0))
-    })
-
-    options.signal?.addEventListener('abort', () => {
-      child.kill()
-      reject(new Error('OCR 已取消'))
-    })
-  })
+    .filter((p) => p.text.trim().length > 0)
 }
 
 /**
- * Windows OCR separates CJK glyphs with spaces and merges lines, so a raw page
- * reads like "第 二 童 程 序". Join CJK runs, keep latin words apart.
+ * Both engines emit one physical line per line. Windows OCR separates CJK
+ * glyphs with spaces ("第 二 章"), so join CJK runs but keep latin words apart.
  */
-function normalize(text) {
+export function normalizeOcrText(text) {
   return String(text)
     .replace(/\r/g, '')
     .split('\n')

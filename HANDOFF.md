@@ -6,10 +6,10 @@
 
 | 项 | 值 |
 |---|---|
-| 本地版本 | **1.2.0**（`package.json`，已装进 desktop profile，`health` 返回 1.2.0） |
+| 本地版本 | **1.3.0**（`package.json`，已装进 desktop profile，`health` 返回 1.3.0） |
 | 安装形态 | `link:` 指向 `C:\Users\ThinkPad\Documents\deepseek-harness\default-workspace\course-assistant` |
-| npm | **已发布 1.2.0**（2026-10-23 18:52，`latest`=1.2.0，26 个文件含 `core/ocr.ps1`）；token 在 `~/.npmrc`（granular，whoami=logb-1） |
-| GitHub | 仓库 `logb-1/dsh-course-assistant`。已 `rebase --onto origin/main bcd0b9a`（`4f9db4a` 与本地 `bcd0b9a` 树相同，历史被重写过一次）→ 本地领先 5 个提交 + tag `v1.2.0`，**只差 `git push origin main --tags`**（缺 GitHub PAT，本机 credential helper 起不来） |
+| npm | **已发布 1.2.0**（2026-10-23 18:52，26 个文件含 `core/ocr.ps1`）；1.3.0 本地就绪未发布；token 在 `~/.npmrc`（granular，whoami=logb-1） |
+| GitHub | 仓库 `logb-1/dsh-course-assistant`，**已同步**：`rebase --onto origin/main` 后用 credential helper 推上去（`4f9db4a..5270ba3`，含 tag `v1.2.0`）。沙箱解除后 helper 就能用，之前失败是沙箱不让建管道 |
 | 槽位 | `main` key `course-assistant`、`sidebar.panellist` id `course-assistant`、`composer.dock` id `course-assistant-dock`，均 active |
 
 ## 二、1.2.0 已完成并验证
@@ -85,9 +85,39 @@ node <pnpm> pack --pack-destination ..   # 确认 core/ocr.ps1 在内
 
 1. **npm 1.2.0 已发布并验证**：`latest`=1.2.0，description 为正常中文，tarball 73.9 KB / 26 条目（含 `core/ocr.ps1`）。发布命令：
    `node <pnpm.mjs> publish --access public --no-git-checks`（先 `--dry-run` 跑一遍）。
-2. **GitHub 已 rebase 干净**：`4f9db4a` 与本地旧 `bcd0b9a` 树完全相同（历史被重写过），所以用
-   `git rebase --onto origin/main bcd0b9a main` 而非普通 rebase，避免重复提交。现在本地领先 5 个提交 + tag `v1.2.0`。
-   **push 未完成**——缺 GitHub PAT，见坑 10。
+2. **GitHub 已同步**：`4f9db4a` 与本地旧 `bcd0b9a` 树完全相同（历史被重写过），所以用
+   `git rebase --onto origin/main bcd0b9a main` 而非普通 rebase，避免重复提交；之后 push 成功（`4f9db4a..5270ba3` + tag `v1.2.0`）。
+   之前 push 失败纯粹是沙箱不让 credential helper 建管道，**解除沙箱后同一条命令直接过**。
 3. **README 面板图**原来写 `docs/panel.png`，而 `files` 里没有 `docs/`，npm 页面是裂图；已改成 raw.githubusercontent 绝对链接。
    这条改动要等**下一次发版**才会体现在 npm 页面。
 4. **HANDOFF 没有 A–G 字母编号**：任务只在「三、待办（按优先级）」1–6 条里。按上下文把 A/B 当作第 1、2 条（GitHub 同步、发 npm）处理。
+
+## 九、2026-10-23 19:0x 会话：E / F / G
+
+字母口径由用户确认：**E** = OcrEngine 抽象 + 列检测，**F** = 章节级重跑 + 差异视图，**G** = Playwright 视觉回归。版本升到 1.3.0（未发布）。
+
+1. **E1 OCR 引擎注册表** `core/ocr.js`：引擎对象 = `{ id, label, platform, available(), availableSync?(), recognize() }`，
+   `registerOcrEngine` / `listOcrEngines` / `ocrStatus` / `pickOcrEngine` / `ocrPdf`。文本归一化只在注册表里做一次。
+   - `core/ocr-windows.js`：原 WinRT 逻辑原样搬过去（`availableSync` 直接返回 `platform === 'win32'`）。
+   - `core/ocr-rapidocr.js` + `core/rapidocr.py`：PyMuPDF 渲染 + RapidOCR 识别，跨平台；探测命令是
+     `python -c "import rapidocr_onnxruntime, fitz"`，**本机未安装所以报 `available:false`**，装上就能用，不需要改代码。
+   - `health.ocrEngines` 逐个报可用性；配置新增 `ocrEngine` / `ocrPython`。
+2. **E2 列检测** `core/pdf.js`：`contentToText` 改成输出「行 = 若干 frag」
+   （x 间距 > 3 em 就断开 frag），`detectGutter` 找纵向沟槽（≥3 行左、≥3 行右、跨栏 <18%），命中才按栏重排；
+   整页宽的 frag 先冲掉两栏缓冲。**没命中就原样返回**，所以单栏页面与幻灯片零影响。
+   合成 PDF 夹具（`makePdf`）在 regress 里同时验「双栏按栏读」和「单栏保持原序」。
+3. **F 单章重跑** `core/pipeline.js` 的 `rerunChapter()` + `POST /rerun {chapterIndex}`：
+   重解析拿回该章正文（解析是确定性的，不必把每章正文落盘）→ 绕过缓存重算 → 其余章节/课程总结/系列课沿用 →
+   `buildReport` 重建整份报告。差异由 `diffSummary()` 算（要点/重点/难点按「kind + 去空白文本」比对），
+   写在 `chapter.diff`，面板在章节下方显示 `+ / −` 与新增关键词。
+4. **G 视觉回归** `tests/visual.spec.mjs` + `playwright.config.mjs`：`channel: 'msedge'` 用系统 Edge，不下载 Chromium；
+   打开面板、断言标题/拖拽区/主按钮 disabled，再对 `.ca-root` 做基线截图（`maxDiffPixelRatio: 0.02`）。
+5. **回归脚本** 12 项全绿（新增：单章差异、双栏、单栏）。`node --check` 全过。
+
+**踩坑（第 9 节新增）**：
+
+- **pnpm 的软链接在旧沙箱下会写成 `Global\...` 形态**，Node 解析不到传递依赖（`Cannot find package 'playwright'`）。
+  沙箱放开后 `rm -rf node_modules && pnpm install` 链接就正常了；判断办法是 `(Get-Item 路径).Target` 是不是绝对路径。
+- **`pnpm exec` 会被 pnpm 自己的 module hook 干扰**，跑 playwright 直接用 `node node_modules/@playwright/test/cli.js`。
+- **GUI 需要 `dsh web` 启动时打印的带 token 地址**：直接 `page.goto('/')` 会拿到 401 纯文本
+  「dsh web authentication required」，spec 里要带 `?token=`（或让用户从地址栏复制整条 URL）。

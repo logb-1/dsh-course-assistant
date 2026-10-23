@@ -46,6 +46,12 @@ window.__ModuleLoader__.load({
     .ca-ch-head{display:flex;align-items:flex-start;gap:8px;justify-content:space-between}
     .ca-ch-title{font-weight:600;font-size:13.5px}
     .ca-ch-subs{color:var(--dsw-alias-label-secondary);font-size:11.5px;margin-top:2px}
+    .ca-ch-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+    .ca-diff{margin-top:8px;border-top:1px dashed var(--dsw-alias-border-l1);padding-top:6px}
+    .ca-diff-h{font-size:11.5px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}
+    .ca-diff ul{margin:2px 0;padding-left:18px;font-size:12px}
+    .ca-diff .add{color:var(--dsw-alias-state-success-primary)}
+    .ca-diff .del{color:var(--dsw-alias-state-error-primary)}
     .ca-ul{margin:6px 0 0;padding-left:18px}
     .ca-ul li{margin:2px 0}
     .ca-tag{display:inline-block;border-radius:999px;padding:0 8px;font-size:11px;line-height:1.8;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary)}
@@ -294,14 +300,17 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function ChapterList({ job }) {
+    function ChapterList({ job, busy, onRerunChapter }) {
       const chapters = job?.chapters || []
       if (!chapters.length) return h('div', { className: 'ca-empty' }, '目录识别完成后会在这里逐章显示。')
+      const canRerun = typeof onRerunChapter === 'function' && job?.status === 'done'
       return h(
         'div',
         null,
-        chapters.map((c) =>
-          h(
+        chapters.map((c) => {
+          const diff = c.diff
+          const changed = diff && (diff.added?.length || diff.removed?.length)
+          return h(
             'div',
             { className: 'ca-ch', key: c.index },
             h(
@@ -312,11 +321,31 @@ window.__ModuleLoader__.load({
                 null,
                 h('div', { className: 'ca-ch-title' }, `第 ${c.index} 章 ${c.title}`),
                 c.subs?.length ? h('div', { className: 'ca-ch-subs' }, c.subs.slice(0, 5).join(' · ')) : null,
+                c.support != null
+                  ? h(
+                      'div',
+                      { className: 'ca-ch-subs' },
+                      `与原文重合 ${Math.round(c.support * 100)}%` +
+                        (c.summary?.faithfulness != null ? ` · 有依据 ${Math.round(c.summary.faithfulness * 100)}%` : ''),
+                    )
+                  : null,
               ),
               h(
-                'span',
-                { className: `ca-tag ${c.status === 'done' ? 'ok' : 'warn'}` },
-                c.status === 'done' ? '已总结' : '处理中',
+                'div',
+                { className: 'ca-ch-actions' },
+                canRerun
+                  ? h(
+                      'button',
+                      {
+                        className: 'ca-btn small',
+                        title: '只用这一章重新总结，其余章节保持不变',
+                        disabled: busy,
+                        onClick: () => onRerunChapter(c.index),
+                      },
+                      '重跑本章',
+                    )
+                  : null,
+                h('span', { className: `ca-tag ${c.status === 'done' ? 'ok' : 'warn'}` }, c.status === 'done' ? '已总结' : '处理中'),
               ),
             ),
             c.summary
@@ -331,8 +360,29 @@ window.__ModuleLoader__.load({
             c.summary?.keywords?.length
               ? h('div', { style: { marginTop: 6 } }, c.summary.keywords.map((k, i) => h('span', { className: 'ca-tag', key: i, style: { marginRight: 6 } }, k)))
               : null,
-          ),
-        ),
+            diff
+              ? h(
+                  'div',
+                  { className: 'ca-diff' },
+                  h(
+                    'div',
+                    { className: 'ca-diff-h' },
+                    `第 ${c.index} 章重跑于 ${String(c.rerunAt || '').slice(11, 16)}：+${diff.added?.length || 0} −${diff.removed?.length || 0} 条要点` +
+                      (changed ? '' : '（内容一致）'),
+                  ),
+                  diff.added?.length
+                    ? h('ul', null, diff.added.map((b, i) => h('li', { key: `a${i}`, className: 'add' }, `+ [${b.kind}] ${b.text}`)))
+                    : null,
+                  diff.removed?.length
+                    ? h('ul', null, diff.removed.map((b, i) => h('li', { key: `r${i}`, className: 'del' }, `− [${b.kind}] ${b.text}`)))
+                    : null,
+                  diff.keywordsAdded?.length
+                    ? h('div', { className: 'ca-ch-subs' }, `新增关键词：${diff.keywordsAdded.join('、')}`)
+                    : null,
+                )
+              : null,
+          )
+        }),
       )
     }
 
@@ -612,7 +662,7 @@ window.__ModuleLoader__.load({
         setPhase('idle')
       }
 
-      const rerun = async (options) => {
+      const rerun = async (options, chapterIndex) => {
         const jobId = job?.id
         if (!jobId || phase === 'running') return
         setError('')
@@ -622,12 +672,17 @@ window.__ModuleLoader__.load({
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ jobId, options }),
+            body: JSON.stringify({ jobId, options, chapterIndex }),
           })
           const data = await res.json()
           if (!data.ok) throw new Error(data.reason || '重跑失败')
           setReport('')
-          setJob({ id: data.jobId, status: 'running', phase: 'queued', message: '重新解析…', progress: 0.01, chapters: [], byChapter: {}, series: [] })
+          if (chapterIndex) {
+            // keep the other chapters on screen; only this one is being redone
+            setJob({ ...job, id: data.jobId, status: 'running', phase: 'rerun', message: `重跑第 ${chapterIndex} 章…` })
+          } else {
+            setJob({ id: data.jobId, status: 'running', phase: 'queued', message: '重新解析…', progress: 0.01, chapters: [], byChapter: {}, series: [] })
+          }
           poll(data.jobId)
         } catch (e) {
           setPhase('error')
@@ -739,7 +794,9 @@ window.__ModuleLoader__.load({
                       )
                     : null,
                 ),
-                tab === 'points' ? h(ChapterList, { job }) : null,
+                tab === 'points'
+                  ? h(ChapterList, { job, busy, onRerunChapter: (index) => rerun({ withVideos }, index) })
+                  : null,
                 tab === 'toc' ? h(Toc, { job }) : null,
                 tab === 'videos' ? h(VideoList, { job }) : null,
                 tab === 'report'

@@ -11,10 +11,12 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { basename } from 'node:path'
 import { parseFile } from '../core/parser.js'
+import { parsePdf } from '../core/pdf.js'
 import { buildOutline } from '../core/outline.js'
 import { assessQuality } from '../core/quality.js'
 import { detectDomain } from '../core/domain.js'
 import { supportScore } from '../core/verify.js'
+import { diffSummary } from '../core/pipeline.js'
 
 const QUIET = process.argv.includes('--quiet')
 const DESKTOP = 'C:\\Users\\ThinkPad\\Desktop'
@@ -114,6 +116,76 @@ check('可信度：原文要点高重合、编造内容低重合', () => {
   assert(good > 0.6, `原文要点得分 ${good} 偏低`)
   assert(bad < 0.2, `编造内容得分 ${bad} 偏高`)
   return `good=${good} bad=${bad}`
+})
+
+check('章节重跑差异：只报新增/删除的要点', () => {
+  const before = { key_points: ['A', 'B'], important: ['C'], difficult: [], keywords: ['x'] }
+  const after = { key_points: ['B', 'D'], important: ['C'], difficult: [], keywords: ['x', 'y'] }
+  const diff = diffSummary(before, after)
+  assert(diff.added.length === 1 && diff.added[0].text === 'D', `新增判错：${JSON.stringify(diff.added)}`)
+  assert(diff.removed.length === 1 && diff.removed[0].text === 'A', `删除判错：${JSON.stringify(diff.removed)}`)
+  assert(diff.keywordsAdded.length === 1 && diff.keywordsAdded[0] === 'y', `关键词新增判错：${JSON.stringify(diff.keywordsAdded)}`)
+  assert(diff.changed === true, '应标记为有变化')
+  // a rerun that produces the same bullets must not look like a change
+  const same = diffSummary(before, { ...before })
+  assert(same.added.length === 0 && same.removed.length === 0 && same.changed === false, '相同内容被判成有变化')
+  return `+${diff.added.length} −${diff.removed.length}, 相同内容无差异`
+})
+
+/* --------------------- synthetic PDFs (layout fixtures) --------------------- */
+
+function makePdf(ops) {
+  const content = ops.join('\n')
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ]
+  let out = '%PDF-1.4\n'
+  objects.forEach((body, i) => {
+    out += `${i + 1} 0 obj\n${body}\nendobj\n`
+  })
+  return Buffer.from(`${out}trailer\n<< /Size 6 /Root 1 0 R >>\n%%EOF\n`, 'latin1')
+}
+
+const textOp = (x, y, text) => `BT /F1 12 Tf ${x} ${y} Td (${text}) Tj ET`
+
+check('列检测：双栏 PDF 按栏读，不串行', () => {
+  // drawn left-right-left-right, the way a two-column paper stores its stream
+  const ops = [textOp(50, 730, 'TITLE OF THE WHOLE PAGE THAT REALLY SPANS BOTH COLUMNS WIDE')]
+  const order = []
+  for (let i = 1; i <= 5; i += 1) {
+    const y = 700 - i * 24
+    ops.push(textOp(50, y, `LEFT-${i}`), textOp(330, y, `RIGHT-${i}`))
+  }
+  for (let i = 1; i <= 5; i += 1) order.push(`LEFT-${i}`)
+  for (let i = 1; i <= 5; i += 1) order.push(`RIGHT-${i}`)
+  const text = parsePdf(makePdf(ops), 'two-column.pdf').pages[0].text
+  const at = order.map((needle) => text.indexOf(needle))
+  assert(at.every((i) => i >= 0), `缺文本：${text.replace(/\n/g, ' | ')}`)
+  assert(text.startsWith('TITLE OF THE WHOLE PAGE'), `宽标题应最先输出：${text.split('\n')[0]}`)
+  for (let i = 1; i < at.length; i += 1) {
+    assert(at[i] > at[i - 1], `列顺序错：${text.replace(/\n/g, ' | ')}`)
+  }
+  return '左栏 5 行 → 右栏 5 行'
+})
+
+check('列检测：单栏 PDF 保持原顺序', () => {
+  const ops = []
+  const names = []
+  for (let i = 1; i <= 9; i += 1) {
+    names.push(`LINE-${i}`)
+    ops.push(textOp(60, 720 - i * 24, `LINE-${i}`))
+  }
+  const text = parsePdf(makePdf(ops), 'one-column.pdf').pages[0].text
+  const at = names.map((n) => text.indexOf(n))
+  assert(at.every((i) => i >= 0), `缺文本：${text.replace(/\n/g, ' | ')}`)
+  for (let i = 1; i < at.length; i += 1) {
+    assert(at[i] > at[i - 1], `单栏被重排：${text.replace(/\n/g, ' | ')}`)
+  }
+  return '9 行原序'
 })
 
 let failed = 0
