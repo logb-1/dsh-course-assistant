@@ -98,8 +98,11 @@ function chapterTable(chapters, byChapter, fallback) {
     if (videos.length) {
       for (const v of videos) {
         any = true
+        // "第 7P" beats a whole 30-part collection when the part title matches
+        const partLabel = v.bestPart ? `（第 ${v.bestPart.page}P）` : v.parts > 1 ? `（${v.parts}P 合集）` : ''
+        const url = v.bestPart ? `${v.url}?p=${v.bestPart.page}` : v.url
         rows.push(
-          `| 第 ${c.index} 章 ${cell(c.title)} | ${cell(v.title)} | ${cell(v.author)} | ${fmtPlay(v.play)} | ${fmtDur(v.duration)} | ${v.url} |`,
+          `| 第 ${c.index} 章 ${cell(c.title)} | ${cell(v.title)}${partLabel} | ${cell(v.author)} | ${fmtPlay(v.play)} | ${fmtDur(v.duration)} | ${url} |`,
         )
       }
     } else {

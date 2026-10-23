@@ -634,11 +634,12 @@ export function apply(ctx, config = {}) {
         'action=library 列出历史报告；action=rerun 重跑整份任务或某一章（jobId + 可选 chapterIndex）；' +
         'action=export 导出报告（jobId + format=md|pdf）；action=health 查看模型/OCR/版本状态；' +
         'action=ask 用本地 BM25 在课件里检索并给出带页码的原文片段（jobId + question）；' +
-        'action=coverage 对照考纲算覆盖率（jobId + files[0] 为考纲文件）。',
+        'action=coverage 对照考纲算覆盖率（jobId + files[0] 为考纲文件）；' +
+        'action=append 把新课件追加到已有课程（jobId + files），未变的章节命中缓存不重算。',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['analyze', 'status', 'library', 'rerun', 'export', 'health', 'ask', 'coverage'], description: '操作类型' },
+          action: { type: 'string', enum: ['analyze', 'status', 'library', 'rerun', 'export', 'health', 'ask', 'coverage', 'append'], description: '操作类型' },
           files: {
             type: 'array',
             items: { type: 'string' },
@@ -734,6 +735,25 @@ export function apply(ctx, config = {}) {
           } catch (error) {
             return { ok: false, reason: `考纲解析失败：${error.message}` }
           }
+        }
+        if (args.action === 'append') {
+          const previous = jobs.get(args.jobId) || (args.jobId && store.loadJob(args.jobId))
+          if (!previous) return { ok: false, reason: '任务不存在' }
+          const restored = restoreInputs(args.jobId)
+          if (restored.error) return { ok: false, reason: restored.error }
+          const extra = (Array.isArray(args.files) ? args.files.filter(Boolean) : []).map((file) => ({
+            path: String(file),
+            name: basename(String(file)),
+          }))
+          for (const file of extra) {
+            if (!existsSync(file.path)) return { ok: false, reason: `文件不存在：${file.path}` }
+          }
+          if (!extra.length) return { ok: false, reason: '请给出新增课件路径（files）' }
+          const job = await makeJob([...restored.inputs, ...extra], optionsOf({ withVideos: args.withVideos }))
+          // unchanged chapters hit the summary cache, so only new material costs
+          const created = jobs.get(job.id)
+          if (created) created.appendedFrom = previous.id
+          return { ok: true, jobId: job.id, appendedFrom: previous.id, files: restored.inputs.length + extra.length }
         }
         if (args.action === 'library') {
           return {

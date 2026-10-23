@@ -30,6 +30,7 @@ import { __debug as ooxmlDebug } from '../core/ooxml.js'
 import { boundaryF1, evaluateDoc, windowDiff } from './segment-metrics.mjs'
 import { ask, buildIndex, indexFromPassages, search, serializePassages } from '../core/search.js'
 import { coverage, parseSyllabus } from '../core/coverage.js'
+import { bestPart } from '../core/bili.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
 
@@ -412,6 +413,20 @@ check('考纲覆盖：命中章节并列出未覆盖考点', () => {
   assert(result.uncovered.includes('博弈论与纳什均衡'), '无关考点不应被算作覆盖')
   assert(result.byChapter[1].covered.length === 1, '弹性章应覆盖 1 条')
   return `${result.covered}/${result.total}，未覆盖 ${result.uncovered.length}`
+})
+
+check('B 站分 P：标题匹配到具体 P，无关分 P 不误配', () => {
+  const pages = [
+    { page: 1, part: '第1P C++ 异常处理基础' },
+    { page: 2, part: '第2P C++ 断言与调试' },
+    { page: 3, part: '第3P C++ 智能指针' },
+  ]
+  const hit = bestPart(pages, ['异常与断言', 'C++ 异常处理'])
+  assert(hit?.page === 1, `应命中第 1P，实际 ${JSON.stringify(hit)}`)
+  assert(hit.score >= 0.34, `匹配分数过低：${hit.score}`)
+  assert(bestPart([{ page: 1, part: '线性代数' }, { page: 2, part: '概率论' }], ['异常与断言']) === null, '无关分 P 不应匹配')
+  assert(bestPart([{ page: 1, part: '单 P 视频' }], ['异常']) === null, '单 P 视频不应给分 P 推荐')
+  return `第 ${hit.page}P · ${hit.score}`
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

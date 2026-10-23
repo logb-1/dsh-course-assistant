@@ -99,6 +99,47 @@ function matchScore(item, keywords) {
   return Math.min(1, (hits / keywords.length) * 0.6 + (titleHit / keywords.length) * 0.4)
 }
 
+/** Which part of a multi-part video matches this chapter best? */
+function bestPart(pages, needles) {
+  if (!pages?.length || pages.length < 2) return null
+  const phrases = needles
+    .flatMap((needle) => String(needle || '').split(/[\s,，、/|]+/))
+    .map((phrase) => phrase.trim().toLowerCase())
+    .filter((phrase) => phrase.length >= 2)
+  if (!phrases.length) return null
+  const grams = (text) => {
+    const set = new Set()
+    const clean = String(text || '').toLowerCase()
+    for (let i = 0; i + 2 <= clean.length; i += 1) set.add(clean.slice(i, i + 2))
+    return set
+  }
+  let best = null
+  let bestScore = 0
+  for (const page of pages) {
+    const part = String(page.part || '').toLowerCase()
+    if (!part) continue
+    const partGrams = grams(part)
+    let score = 0
+    for (const phrase of phrases) {
+      if (part.includes(phrase)) {
+        score += 1
+        continue
+      }
+      // a phrase rarely repeats verbatim: accept ≥50% of its bigrams
+      const phraseGrams = grams(phrase)
+      if (!phraseGrams.size) continue
+      const hit = [...phraseGrams].filter((gram) => partGrams.has(gram)).length
+      if (hit / phraseGrams.size >= 0.5) score += hit / phraseGrams.size
+    }
+    const ratio = score / phrases.length
+    if (ratio > bestScore) {
+      bestScore = ratio
+      best = page
+    }
+  }
+  return bestScore >= 0.34 ? { page: best.page, title: best.part, cid: best.cid, score: Math.round(bestScore * 100) / 100 } : null
+}
+
 function scoreItem(item, keywords) {
   const play = Number(item.play) || 0
   const like = Number(item.like) || 0
@@ -332,6 +373,33 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
       .map((e) => ({ ...e.item, rrf: Number(e.rrf.toFixed(4)) }))
   }
 
+  /**
+   * Multi-part videos (合集/分 P) carry the chapter split in `pages[].part`.
+   * Cached like every other Bilibili call, and only fetched for the top hits.
+   */
+  async function videoParts(bvid) {
+    if (!bvid) return []
+    const cacheKey = `bili:parts:${bvid}`
+    const hit = await cache.get(cacheKey)
+    if (hit) return hit
+    await throttle()
+    try {
+      const json = await rawFetch(`${API}/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`, {
+        headers: { Referer: `https://www.bilibili.com/video/${bvid}` },
+      })
+      const pages = (json?.data?.pages || []).map((page) => ({
+        page: Number(page.page) || 0,
+        part: String(page.part || ''),
+        cid: page.cid,
+        duration: Number(page.duration) || 0,
+      }))
+      await cache.set(cacheKey, pages, 24 * 3600 * 1000)
+      return pages
+    } catch {
+      return []
+    }
+  }
+
   async function recommendChapter(keywords, { limit = 3, domain = null, chapterTitle = '' } = {}) {
     // three complementary queries: the chapter's own title, the model keywords,
     // and a domain-generic one; RRF keeps whatever is consistently relevant
@@ -358,7 +426,17 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
     // fused evidence is worth a nudge, but never enough to rescue a bad match
     for (const video of ranked) video.score = Number(Math.min(1, video.score + (video.rrf || 0) * 2).toFixed(3))
     ranked.sort((a, b) => b.score - a.score)
-    return { ok, fallback: !ok, reason, queries, videos: ranked.slice(0, limit) }
+    const top = ranked.slice(0, limit)
+    // enrich only the first two hits: each one costs a request
+    for (const video of top.slice(0, 2)) {
+      const pages = await videoParts(video.bvid)
+      if (pages.length > 1) {
+        video.partCount = pages.length
+        const match = bestPart(pages, [chapterTitle, ...keywords])
+        if (match) video.bestPart = match
+      }
+    }
+    return { ok, fallback: !ok, reason, queries, videos: top }
   }
 
   return {
@@ -366,6 +444,7 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
     rank,
     recommendSeries,
     recommendChapter,
+    videoParts,
     get blocked() {
       return blocked
     },
@@ -376,4 +455,4 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
   }
 }
 
-export { fmtDuration, parseDuration, scoreItem, matchScore }
+export { fmtDuration, parseDuration, scoreItem, matchScore, bestPart }

@@ -440,7 +440,7 @@ window.__ModuleLoader__.load({
                         h(
                           'li',
                           { key: i },
-                          h('a', { href: v.url, target: '_blank', rel: 'noreferrer' }, v.title),
+                          h('a', { href: v.bestPart ? `${v.url}?p=${v.bestPart.page}` : v.url, target: '_blank', rel: 'noreferrer' }, v.title + (v.bestPart ? `（第 ${v.bestPart.page}P）` : '')),
                           h('span', { className: 'ca-file-meta', style: { marginLeft: 6 } }, `${v.author} · ${v.play} 播放 · 评分 ${v.score}`),
                         ),
                       ),

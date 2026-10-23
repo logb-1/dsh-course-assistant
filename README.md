@@ -135,6 +135,14 @@ GET /course-assistant/ask?id=<jobId>&q=需求价格弹性怎么定义
 course_assistant { action: "coverage", jobId: "...", files: ["期中考点.md"] }
 ```
 
+**B 站推荐细化到分 P**：对多 P 合集会再查一次 `view` 接口，用分 P 标题和章节标题/关键词做短语匹配
+（短语整体命中优先，否则按 bigram ≥50% 判近似），命中就推荐「第 7P」并直接带 `?p=7` 链接；
+单 P 视频不会硬凑。分 P 信息有 24 小时缓存，每个章节最多查前 2 个视频。
+
+**增量课程**：`course_assistant { action: "append", jobId, files: [...] }`
+把新课件追加到已有课程：旧章节文本没变 → 摘要缓存命中不重算，只总结新增章节，然后重建整份报告
+（实测：3 章旧 + 2 章新 → 5 章，`cacheHits = 3`）。
+
 **修掉一个长期的静默 bug**：`summarizeChapter` 之前只拿到章节元数据，**正文从未传给模型**
 （模型一直在只看标题写要点）。1.4.0 起正文显式传入，prompt 版本升到 v5。
 
