@@ -22,6 +22,8 @@ import { runPipeline, rerunChapter } from './core/pipeline.js'
 import { ocrAvailable, ocrStatus } from './core/ocr.js'
 import { pointText } from './core/verify.js'
 import { ask, indexFromPassages } from './core/search.js'
+import { coverage, parseSyllabus } from './core/coverage.js'
+import { parseFile } from './core/parser.js'
 import { markdownToDocx } from './core/docx.js'
 import { SUPPORTED } from './core/parser.js'
 
@@ -631,11 +633,12 @@ export function apply(ctx, config = {}) {
         'action=analyze 分析给定文件（files 为工作区路径，可多个）；action=status 查询任务进度（jobId）；' +
         'action=library 列出历史报告；action=rerun 重跑整份任务或某一章（jobId + 可选 chapterIndex）；' +
         'action=export 导出报告（jobId + format=md|pdf）；action=health 查看模型/OCR/版本状态；' +
-        'action=ask 用本地 BM25 在课件里检索并给出带页码的原文片段（jobId + question）。',
+        'action=ask 用本地 BM25 在课件里检索并给出带页码的原文片段（jobId + question）；' +
+        'action=coverage 对照考纲算覆盖率（jobId + files[0] 为考纲文件）。',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['analyze', 'status', 'library', 'rerun', 'export', 'health', 'ask'], description: '操作类型' },
+          action: { type: 'string', enum: ['analyze', 'status', 'library', 'rerun', 'export', 'health', 'ask', 'coverage'], description: '操作类型' },
           files: {
             type: 'array',
             items: { type: 'string' },
@@ -711,6 +714,25 @@ export function apply(ctx, config = {}) {
             chapters: job.chapters?.length || 0,
             reportPath: job.reportPath || '',
             error: job.error || '',
+          }
+        }
+        if (args.action === 'coverage') {
+          const job = jobs.get(args.jobId) || (args.jobId && store.loadJob(args.jobId))
+          if (!job) return { ok: false, reason: '任务不存在' }
+          const target = (Array.isArray(args.files) ? args.files.filter(Boolean) : [])[0]
+          if (!target) return { ok: false, reason: '请给出考纲文件路径（files[0]）' }
+          if (!existsSync(target)) return { ok: false, reason: `文件不存在：${target}` }
+          try {
+            const doc = parseFile(String(target), basename(String(target)))
+            // markdown/docx put the body in blocks, pdf/pptx in pages
+            const body =
+              doc.text ||
+              (doc.blocks || []).map((b) => `${b.title}\n${b.text}`).join('\n\n') ||
+              (doc.pages || []).map((p) => p.text).join('\n\n')
+            const result = coverage(job.chapters || [], parseSyllabus(body, { ignore: [doc.title, basename(String(target))] }))
+            return { ok: true, jobId: job.id, syllabus: basename(String(target)), ...result }
+          } catch (error) {
+            return { ok: false, reason: `考纲解析失败：${error.message}` }
           }
         }
         if (args.action === 'library') {

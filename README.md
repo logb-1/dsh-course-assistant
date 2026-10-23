@@ -126,6 +126,15 @@ GET /course-assistant/ask?id=<jobId>&q=需求价格弹性怎么定义
 
 检索索引在建报告时落到 `jobs/<id>.index.json`，章节重跑只替换该章的片段。
 
+**对照考纲算覆盖率**（`core/coverage.js`）：把复习大纲/考点清单交给它，按 token 重合把每条考点
+归到最匹配的章节，输出每章覆盖了哪几条、以及**没有任何章节覆盖的考点**。
+规则保守：至少命中 2 个词才算覆盖，避免「均衡」这种单字面重合造成假覆盖。
+
+```bash
+# Agent 工具
+course_assistant { action: "coverage", jobId: "...", files: ["期中考点.md"] }
+```
+
 **修掉一个长期的静默 bug**：`summarizeChapter` 之前只拿到章节元数据，**正文从未传给模型**
 （模型一直在只看标题写要点）。1.4.0 起正文显式传入，prompt 版本升到 v5。
 

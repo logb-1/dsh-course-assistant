@@ -246,7 +246,7 @@ G  gold 集 + NLTK windowdiff 的页级改造
   + `tools/segment-metrics.mjs`（windowdiff / ±1 页边界 F1）；`--real` 组门禁 windowdiff ≤0.25、F1 ≥0.85，
   当前 **windowdiff 0.061 / F1 0.947（章 10 vs gold 11，封面并入）**
 - ~~5.1 完整 CTM~~：**已完成**。`q/Q` 维护 CTM，有效字号 = `Tf × √|det(Tm×CTM)|`；新增合成 PDF 断言
-- **§9 其余**：考纲覆盖率、B 站分 P、增量课程、纯图页视觉（**9.3 BM25 问答已完成**）
+- **§9 其余**：B 站分 P、增量课程、纯图页视觉（**9.3 BM25 问答、9.2 考纲覆盖率已完成**）
 - **未发布**：1.4.0 只在本地与 GitHub，`pnpm publish` 未跑
 - **推送状态**：本地 `main` = f70b982（含 G/CTM）；GitHub 443 仍连不上
   （`Failed to connect to github.com:443`），恢复后执行

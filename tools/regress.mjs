@@ -29,6 +29,7 @@ import { createStore } from '../core/store.js'
 import { __debug as ooxmlDebug } from '../core/ooxml.js'
 import { boundaryF1, evaluateDoc, windowDiff } from './segment-metrics.mjs'
 import { ask, buildIndex, indexFromPassages, search, serializePassages } from '../core/search.js'
+import { coverage, parseSyllabus } from '../core/coverage.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
 
@@ -395,6 +396,22 @@ check('课件问答：BM25 命中正确的章并给页码', () => {
   const miss = ask(index, '量子纠缠退相干')
   assert(miss.answers.length === 0 && miss.hint, '无关问题应返回空与提示')
   return `ch${hits[0].chapter} p${hits[0].page}`
+})
+
+check('考纲覆盖：命中章节并列出未覆盖考点', () => {
+  const chapters = [
+    { index: 1, title: '第一章 供给与需求', summary: { keywords: ['供给', '需求'], key_points: [{ text: '需求定律：价格上升需求量下降' }] } },
+    { index: 2, title: '第二章 弹性', summary: { keywords: ['需求价格弹性'], key_points: [{ text: '弹性等于需求量变化百分比除以价格变化百分比' }] } },
+    { index: 3, title: '第三章 市场结构', summary: { keywords: ['垄断', '完全竞争'], key_points: [{ text: '垄断市场存在进入壁垒' }] } },
+  ]
+  const text = ['# 期中考点', '- 需求定律与供给定律', '- 需求价格弹性及其分类', '- 垄断市场的进入壁垒', '- 博弈论与纳什均衡', '- 外部性与科斯定理'].join('\n')
+  const items = parseSyllabus(text, { ignore: ['期中考点'] })
+  assert(items.length === 5, `考纲条目数 ${items.length}，应为 5`)
+  const result = coverage(chapters, items)
+  assert(result.covered === 3, `覆盖数 ${result.covered}，应为 3`)
+  assert(result.uncovered.includes('博弈论与纳什均衡'), '无关考点不应被算作覆盖')
+  assert(result.byChapter[1].covered.length === 1, '弹性章应覆盖 1 条')
+  return `${result.covered}/${result.total}，未覆盖 ${result.uncovered.length}`
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */
