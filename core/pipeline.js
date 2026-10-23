@@ -235,9 +235,15 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
         const support = supportScore(text, summary.key_points || [])
         summary.support = support
         chapter.support = support
-        if (support < SUPPORT_THRESHOLD) {
+        // statement-level check: the model marks bullets it could not source
+        const total = (summary.key_points || []).length
+        const marked = Array.isArray(summary.unsupported_idx)
+        const faithfulness = marked && total ? 1 - summary.unsupported_idx.length / total : null
+        summary.faithfulness = faithfulness === null ? null : Math.round(faithfulness * 100) / 100
+        if (support < SUPPORT_THRESHOLD || (faithfulness !== null && faithfulness < 0.6)) {
           summary.lowConfidence = true
-          warnings.push(`第 ${chapter.index} 章要点与原文重合度仅 ${Math.round(support * 100)}%，可能有推断成分`)
+          const faithText = faithfulness === null ? '—' : `${Math.round(faithfulness * 100)}%`
+          warnings.push(`第 ${chapter.index} 章可信度偏低：有依据 ${faithText}，与原文重合 ${Math.round(support * 100)}%`)
         }
       } catch {}
       doneCount += 1
@@ -249,7 +255,10 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       if (options?.withVideos !== false) {
         try {
           const keywords = (summary.keywords || []).slice(0, chapterQueries)
-          const res = await bili.recommendChapter(keywords.length ? keywords : [chapter.title], { domain })
+          const res = await bili.recommendChapter(keywords.length ? keywords : [chapter.title], {
+            domain,
+            chapterTitle: chapter.title,
+          })
           job.byChapter[chapter.index] = {
             videos: res.videos.map((v) => ({
               bvid: v.bvid,

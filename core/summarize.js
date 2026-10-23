@@ -11,8 +11,9 @@ const MAX_CHAPTER_CHARS = 3600
 
 const SYSTEM = [
   '你是大学课程助教。只输出一个 JSON 对象，不要解释、不要 Markdown 代码块。',
-  'JSON 结构：{"chapter": string, "key_points": string[], "important": string[], "difficult": string[], "keywords": string[]}',
+  'JSON 结构：{"chapter": string, "key_points": string[], "important": string[], "difficult": string[], "keywords": string[], "unsupported_idx": number[]}',
   '要求：key_points 3-6 条，每条不超过 40 字，必须来自给定原文，不要编造案例；important/difficult 各 0-2 条；',
+  'unsupported_idx 列出「原文里找不到依据」的 key_points 下标（从 0 开始）；全部有依据就给 []。',
   '原文信息不足时（例如整页只有图），就用原文里实际出现的词写短句，不要用通用教科书理论补全。',
   'keywords 2-4 个，用「学科领域 + 具体概念」的组合词，直接在 B 站能搜到该章网课（例如「计算机系统 缓存 命中率」「国际贸易 政策评估」），不要用「论证逻辑」这类通用方法论词。',
   '如果给出了「课程领域」，keywords 必须以该领域词开头（例如 C++ 课就写「C++ 异常处理」），严禁写成其它语言（Python/Java 等）。',
@@ -111,6 +112,11 @@ function parseJson(raw) {
     important: arr(value.important ?? value.key ?? value.focus, 4),
     difficult: arr(value.difficult ?? value.hard ?? value.challenge, 4),
     keywords: arr(value.keywords ?? value.keyword ?? value.tags, 5),
+    unsupported_idx: Array.isArray(value.unsupported_idx)
+      ? value.unsupported_idx
+          .map(Number)
+          .filter((n) => Number.isInteger(n) && n >= 0 && n < 8)
+      : null,
   }
 }
 

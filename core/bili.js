@@ -313,33 +313,52 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
    * failure mode.
    * @param {string[]} keywords 1–2 search terms
    */
-  async function recommendChapter(keywords, { limit = 3, domain = null } = {}) {
+  /**
+   * Reciprocal Rank Fusion: a result that appears high in several query lists
+   * beats one that only wins a single query. k=60 is the value from the original
+   * RRF paper.
+   */
+  function fuse(lists, k = 60) {
+    const merged = new Map()
+    for (const list of lists) {
+      list.forEach((item, rank) => {
+        const entry = merged.get(item.bvid) || { item, rrf: 0 }
+        entry.rrf += 1 / (k + rank + 1)
+        merged.set(item.bvid, entry)
+      })
+    }
+    return [...merged.values()]
+      .sort((a, b) => b.rrf - a.rrf)
+      .map((e) => ({ ...e.item, rrf: Number(e.rrf.toFixed(4)) }))
+  }
+
+  async function recommendChapter(keywords, { limit = 3, domain = null, chapterTitle = '' } = {}) {
+    // three complementary queries: the chapter's own title, the model keywords,
+    // and a domain-generic one; RRF keeps whatever is consistently relevant
     const queries = [
       ...new Set(
-        keywords
-          .map((k) => String(k || '').trim())
-          .filter(Boolean)
-          .map((k) => anchorQuery(k, domain)),
+        [
+          chapterTitle ? cleanTitle(chapterTitle) : '',
+          ...keywords.map((key) => anchorQuery(key, domain)),
+          domain ? `${domain.name} 教程` : '',
+        ].filter(Boolean),
       ),
-    ].slice(0, 2)
-    const pool = []
+    ].slice(0, 3)
+    const lists = []
     let ok = false
     let reason = ''
-    for (const q of queries) {
-      const res = await search(q, 10)
+    for (const query of queries) {
+      const res = await search(query, 20)
       if (res.ok) ok = true
       else reason = res.reason
-      pool.push(...res.items)
+      lists.push(res.items)
     }
     const kw = tokens(`${queries.join(' ')} ${domain ? domain.name : ''}`)
-    // one incidental word match is not enough: require a real hit score
-    return {
-      ok,
-      fallback: !ok,
-      reason,
-      queries,
-      videos: rank(pool, kw, { domain }).filter((v) => v.score >= 0.28).slice(0, limit),
-    }
+    const ranked = rank(fuse(lists), kw, { domain }).filter((v) => v.score >= 0.28)
+    // fused evidence is worth a nudge, but never enough to rescue a bad match
+    for (const video of ranked) video.score = Number(Math.min(1, video.score + (video.rrf || 0) * 2).toFixed(3))
+    ranked.sort((a, b) => b.score - a.score)
+    return { ok, fallback: !ok, reason, queries, videos: ranked.slice(0, limit) }
   }
 
   return {
