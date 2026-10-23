@@ -241,6 +241,7 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
         .map((t, i) => `${i + 1}.${t}`)
         .join(' ')}`
     : ''
+  const body = truncate(source)
   const prompt = [
     `课程名：${courseTitle}`,
     domain ? `课程领域：${domain.name}（本章 keywords 必须以「${domain.name}」开头）` : '',
@@ -249,7 +250,7 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
     chapter.subs?.length ? `本节标题：${chapter.subs.slice(0, 8).join(' / ')}` : '',
     '以下是该章原文（已去页眉页脚）：',
     '"""',
-    truncate(source),
+    body,
     '"""',
     '请按系统提示的 JSON 结构输出。',
   ]
@@ -285,6 +286,9 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
     ...parsed,
     chapter: parsed.chapter || chapter.title,
     keywords: keywords.length ? keywords : anchorKeywords(localSummary(chapter).keywords, domain),
+    // observability: how much of the chapter actually reached the model
+    sourceChars: source.length,
+    keptChars: body.length,
   }
 }
 

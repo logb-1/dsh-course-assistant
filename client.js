@@ -365,7 +365,9 @@ window.__ModuleLoader__.load({
               ? h(
                   'ul',
                   { className: 'ca-ul' },
-                  (c.summary.key_points || []).map((p, i) => h('li', { key: `k${i}` }, pointText(p))),
+                  (c.summary.key_points || []).map((p, i) =>
+                    h('li', { key: `k${i}` }, pointText(p) + (p?.page ? `（p.${p.page}）` : '')),
+                  ),
                   (c.summary.important || []).map((p, i) => h('li', { key: `i${i}` }, `⭐ 重点：${p}`)),
                   (c.summary.difficult || []).map((p, i) => h('li', { key: `d${i}` }, `⚠️ 难点：${p}`)),
                 )

@@ -98,6 +98,9 @@ function send(res, code, body, headers = {}) {
 export function apply(ctx, config = {}) {
   const store = createStore(resolveDataDir(config.dataDir))
   store.pruneUploads(config.keepUploadsDays ?? 7)
+  try {
+    store.cache.prune(500)
+  } catch {}
   const bili = createBiliClient({
     cache: store.cache,
     spacingMs: Number(config.spacingMs) || 1000,
@@ -545,17 +548,21 @@ export function apply(ctx, config = {}) {
       name: 'course_assistant',
       description:
         '课程文件学习助手：把 .pptx/.pdf/.docx/.md/.txt 转成学习报告（课程目录、分章知识点与重难点、全课程总结，附录 B 站网课推荐）。' +
-        'action=analyze 分析给定文件（files 为工作区路径，可多个）；action=status 查询任务进度（jobId）；action=library 列出历史报告。',
+        'action=analyze 分析给定文件（files 为工作区路径，可多个）；action=status 查询任务进度（jobId）；' +
+        'action=library 列出历史报告；action=rerun 重跑整份任务或某一章（jobId + 可选 chapterIndex）；' +
+        'action=export 导出报告（jobId + format=md|pdf）；action=health 查看模型/OCR/版本状态。',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['analyze', 'status', 'library'], description: '操作类型' },
+          action: { type: 'string', enum: ['analyze', 'status', 'library', 'rerun', 'export', 'health'], description: '操作类型' },
           files: {
             type: 'array',
             items: { type: 'string' },
             description: '课程文件路径（绝对路径或相对当前工作目录）',
           },
-          jobId: { type: 'string', description: 'status 操作使用的任务 id' },
+          jobId: { type: 'string', description: 'status / rerun / export 使用的任务 id' },
+          chapterIndex: { type: 'number', description: 'rerun 时只重跑这一章（从 1 开始），省略则整份重跑' },
+          format: { type: 'string', enum: ['md', 'pdf'], description: 'export 的格式，默认 md' },
           withVideos: { type: 'boolean', description: '是否检索 B 站网课，默认 true' },
         },
         required: ['action'],
@@ -563,6 +570,44 @@ export function apply(ctx, config = {}) {
       },
       output: output({ type: 'object', additionalProperties: true }),
       async execute(args = {}) {
+        if (args.action === 'health') {
+          return {
+            ok: true,
+            version: PKG.version,
+            llm: !!resolveLlm(),
+            pdf: !!ctx.get('officeToPdf')?.convert,
+            ocrEngines: await ocrStatus(),
+            dataDir: store.dataDir,
+          }
+        }
+        if (args.action === 'export') {
+          const job = jobs.get(args.jobId) || (args.jobId && store.loadJob(args.jobId))
+          if (!job) return { ok: false, reason: '任务不存在' }
+          const format = args.format === 'pdf' ? 'pdf' : 'md'
+          if (format === 'md') {
+            const markdown = job.markdown || (job.reportPath ? readFileSync(job.reportPath, 'utf8') : '')
+            if (!markdown) return { ok: false, reason: '报告尚未生成' }
+            return { ok: true, jobId: job.id, format: 'md', reportPath: job.reportPath || '' }
+          }
+          const refreshed = job.markdown ? job : { ...job, markdown: job.reportPath ? readFileSync(job.reportPath, 'utf8') : '' }
+          try {
+            const pdfPath = await exportPdf(refreshed)
+            return { ok: true, jobId: job.id, format: 'pdf', reportPath: pdfPath }
+          } catch (error) {
+            return { ok: false, reason: error.message }
+          }
+        }
+        if (args.action === 'rerun') {
+          const previous = jobs.get(args.jobId) || (args.jobId && store.loadJob(args.jobId))
+          if (!previous) return { ok: false, reason: '任务不存在' }
+          const inputs = jobInputs.get(args.jobId) || restoreInputs(args.jobId).inputs
+          if (!inputs?.length) return { ok: false, reason: restoreInputs(args.jobId).error || '原任务的上传文件已过期' }
+          const chapterIndex = Number(args.chapterIndex) || 0
+          const job = chapterIndex > 0
+            ? await makeRerunJob(previous, inputs, chapterIndex, optionsOf({ withVideos: args.withVideos }))
+            : await makeJob(inputs, optionsOf({ withVideos: args.withVideos }))
+          return { ok: true, jobId: job.id, chapterIndex: chapterIndex || null, status: job.status }
+        }
         if (args.action === 'status') {
           const job = jobs.get(args.jobId) || (args.jobId && store.loadJob(args.jobId))
           if (!job) return { ok: false, reason: '任务不存在' }

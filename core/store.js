@@ -112,6 +112,33 @@ export function createStore(dataDir) {
           } catch {}
         }
       },
+      /** Drop expired entries and cap the file so it cannot grow forever. */
+      prune(maxEntries = 500) {
+        const data = loadCache()
+        const now = Date.now()
+        let changed = false
+        for (const [key, entry] of Object.entries(data)) {
+          if (entry?.exp && entry.exp < now) {
+            delete data[key]
+            changed = true
+          }
+        }
+        const keys = Object.keys(data)
+        if (keys.length > maxEntries) {
+          // soonest-expiring first; entries without an expiry sort last (kept)
+          const ordered = keys.sort(
+            (a, b) => (data[a]?.exp || Number.MAX_SAFE_INTEGER) - (data[b]?.exp || Number.MAX_SAFE_INTEGER),
+          )
+          for (const key of ordered.slice(0, keys.length - maxEntries)) delete data[key]
+          changed = true
+        }
+        if (changed) {
+          try {
+            atomicWrite(cachePath, JSON.stringify(data))
+          } catch {}
+        }
+        return changed
+      },
     },
 
     saveUpload(buf, fileName) {

@@ -18,7 +18,7 @@ import { buildReport } from './report.js'
 import { assessQuality, describeQuality } from './quality.js'
 import { ocrPdf, ocrStatus } from './ocr.js'
 import { detectDomain } from './domain.js'
-import { evaluateSummary, describeConfidence, pointText } from './verify.js'
+import { evaluateSummary, describeConfidence, pointText, pointEvidence, normalizeForMatch } from './verify.js'
 
 /** Content-addressed OCR cache: reruns reuse the first run's pages byte-for-byte. */
 export function ocrCachePath(store, pdfPath, options = {}) {
@@ -37,6 +37,25 @@ export const JOB_SCHEMA_VERSION = 2
 export function summaryCacheKey(text, { provider, model, domain } = {}) {
   const scope = `${provider || '-'}/${model || '-'}/${domain?.id || '-'}`
   return `sum:v${CHAPTER_PROMPT_VERSION}:${sha(text)}:${scope}`
+}
+
+/**
+ * Point each bullet at the page its quote came from, so the report can say
+ * "（p.12）" instead of asking the reader to search. Single-document only: page
+ * numbers collide across files.
+ */
+export function locatePages(chapter, summary, docs) {
+  if (docs.length !== 1) return
+  const wanted = new Set(chapter.pages || [])
+  const pages = (docs[0].pages || []).filter((p) => wanted.has(p.index))
+  if (!pages.length) return
+  const normalized = pages.map((p) => ({ index: p.index, text: normalizeForMatch(p.text) }))
+  for (const point of summary.key_points || []) {
+    const quote = normalizeForMatch(pointEvidence(point)).slice(0, 24)
+    if (quote.length < 6) continue
+    const hit = normalized.find((p) => p.text.includes(quote))
+    if (hit) point.page = hit.index
+  }
 }
 
 /**
@@ -74,6 +93,23 @@ export function applyAssessment({ summary, chapter, text, warnings }) {
  * @param {object} opts.deps { store, bili, llm: {provider, model, stream} | null }
  * @param {(job:object)=>void} opts.emit progress callback (same object mutated)
  */
+/**
+ * The provider occasionally ends a concurrent stream with no text at all. One
+ * quiet retry turns those into a normal summary instead of a local fallback.
+ */
+async function summarizeWithRetry(args, attempts = 2) {
+  let last = null
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await summarizeChapter(args)
+    } catch (error) {
+      last = error
+      if (i + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 400 * (i + 1)))
+    }
+  }
+  throw last
+}
+
 /* ------------------------- shared preparation step ------------------------- */
 
 /**
@@ -324,6 +360,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
           .catch((e) => ({ ok: false, series: [], fallback: true, reason: e.message }))
 
   let doneCount = 0
+  const telemetry = { chapters: chapters.length, modelCalls: 0, cacheHits: 0, sourceChars: 0, keptChars: 0 }
   await mapLimit(
     chapters.map((chapter, i) => ({ chapter, text: texts[i] })),
     concurrency,
@@ -334,11 +371,14 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
         try {
           const cached = await store.cache.get(cacheKey)
           // clone: the assessment fields written below must never leak into the cache
-          if (cached) summary = structuredClone(cached)
+          if (cached) {
+            summary = structuredClone(cached)
+            telemetry.cacheHits += 1
+          }
         } catch {}
         if (!summary) {
           try {
-            summary = await summarizeChapter({
+            summary = await summarizeWithRetry({
               llm,
               provider: llm.provider,
               model: llm.model,
@@ -359,6 +399,10 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
         summary = { ...localSummary({ ...chapter, text }), offline: true }
       }
       applyAssessment({ summary, chapter, text, warnings })
+      locatePages(chapter, summary, docs)
+      telemetry.modelCalls += summary.sourceChars ? 1 : 0
+      telemetry.sourceChars += summary.sourceChars || 0
+      telemetry.keptChars += summary.keptChars || 0
       doneCount += 1
       push({
         message: `总结第 ${chapter.index}/${chapters.length} 章：${chapter.title.slice(0, 24)}`,
@@ -485,6 +529,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     progress: 1,
     markdown,
     reportPath,
+    telemetry,
     elapsedMs: Date.now() - started,
   })
   return job
@@ -627,7 +672,7 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   const cacheKey = summaryCacheKey(target.text, { provider: llm?.provider, model: llm?.model, domain })
   if (llm) {
     try {
-      summary = await summarizeChapter({
+      summary = await summarizeWithRetry({
         llm,
         provider: llm.provider,
         model: llm.model,
@@ -650,6 +695,15 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   }
   // same assessment as the first run, otherwise the note disappears after a rerun
   applyAssessment({ summary, chapter, text: target.text, warnings })
+  locatePages(chapter, summary, docs)
+  job.telemetry = {
+    chapters: (previous.chapters || []).length,
+    modelCalls: summary.sourceChars ? 1 : 0,
+    cacheHits: 0,
+    sourceChars: summary.sourceChars || 0,
+    keptChars: summary.keptChars || 0,
+    chapterRerun: target.index,
+  }
 
   const oldChapter =
     (previous.chapters || []).find((c) => c.index === target.index) || (previous.chapters || [])[Number(chapterIndex) - 1] || {}

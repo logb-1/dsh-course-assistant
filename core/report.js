@@ -35,10 +35,13 @@ function toc(chapters) {
 function chapterSection(c) {
   const s = c.summary || {}
   const lines = [`### 第 ${c.index} 章 ${c.title}`]
-  const points = (s.key_points || []).map(pointText).filter(Boolean)
+  const points = (s.key_points || []).filter(Boolean)
   if (points.length) {
     lines.push('- 要点：')
-    for (const p of points) lines.push(`  - ${p}`)
+    for (const p of points) {
+      const page = Number(p?.page)
+      lines.push(`  - ${pointText(p)}${page ? `（p.${page}）` : ''}`)
+    }
   } else {
     lines.push('- 要点：（本章未提取到有效要点）')
   }
