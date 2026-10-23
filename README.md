@@ -7,7 +7,7 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 - **常驻入口**：输入框下方 dock 的一行「🎓 课程助手 · 打开面板 →」（`conversation.composer.dock`）
 - **给 Agent 的 Tool**：`course_assistant`（`analyze` / `status` / `library`）
 
-![课程助手面板](docs/panel.png)
+![课程助手面板](https://raw.githubusercontent.com/logb-1/dsh-course-assistant/main/docs/panel.png)
 
 ## 界面
 

@@ -8,8 +8,8 @@
 |---|---|
 | 本地版本 | **1.2.0**（`package.json`，已装进 desktop profile，`health` 返回 1.2.0） |
 | 安装形态 | `link:` 指向 `C:\Users\ThinkPad\Documents\deepseek-harness\default-workspace\course-assistant` |
-| npm | 已发布 **1.1.1**；**1.2.0 未发布**（本地已验证，只差 `pnpm publish`） |
-| GitHub | 仓库 `logb-1/dsh-course-assistant`，远端停在 `4f9db4a3`（README 安装四法）；本地领先 2 个提交（`b3f1038`、`3692263`）→ **分支已分叉**，需 `git fetch origin && git rebase origin/main` |
+| npm | **已发布 1.2.0**（2026-10-23 18:52，`latest`=1.2.0，26 个文件含 `core/ocr.ps1`）；token 在 `~/.npmrc`（granular，whoami=logb-1） |
+| GitHub | 仓库 `logb-1/dsh-course-assistant`。已 `rebase --onto origin/main bcd0b9a`（`4f9db4a` 与本地 `bcd0b9a` 树相同，历史被重写过一次）→ 本地领先 5 个提交 + tag `v1.2.0`，**只差 `git push origin main --tags`**（缺 GitHub PAT，本机 credential helper 起不来） |
 | 槽位 | `main` key `course-assistant`、`sidebar.panellist` id `course-assistant`、`composer.dock` id `course-assistant-dock`，均 active |
 
 ## 二、1.2.0 已完成并验证
@@ -57,6 +57,13 @@ node <pnpm> pack --pack-destination ..   # 确认 core/ocr.ps1 在内
 6. **`git checkout`/`reset --hard` 会覆盖工作区改动**：先确认有没有未提交内容。
 7. **OCR 的 Windows OCR 对公式/数字必错**（`2.3`→`23`、`0.95`→`0．95`），只能用于正文；幻灯片大字效果尚可。
 8. **`.git` 曾被掏空过一次**（只剩 objects/refs），恢复方式：`git init` + `remote add` + `fetch` + `reset --mixed origin/main`。
+9. **本机 HTTPS 只有 Node 能出去**：pwsh/.NET（`Invoke-WebRequest`、`Test-NetConnection` 之外）与 git 默认的 schannel 后端都报 `SEC_E_NO_CREDENTIALS` / 「基础连接已经关闭」。绕法：
+   - git：`git config http.sslBackend openssl`（已写进本仓库 `.git/config`），之后 `fetch`/`ls-remote` 正常；
+   - 探网：用 `node -e "fetch(...)"`（自带 TLS 栈），别用 `Invoke-RestMethod` 判网络死活；
+   - `Invoke-RestMethod http://127.0.0.1:54763/...` 是本机回环，仍可正常用。
+10. **git 的 credential helper（manager）在沙箱里起不来**：`couldn't create signal pipe, Win32 error 5`（不允许建命名管道），push 只会退化成 `could not read Username`。要 push 必须直接带 PAT：
+    `git push https://<PAT>@github.com/logb-1/dsh-course-assistant.git main --tags`（用显式 URL，别写进 remote，避免 token 落盘）。
+11. **npm 的 packument 有 CDN 缓存**：刚 publish 完查 `registry.npmjs.org/<pkg>` 可能还是旧版本；查 `/<pkg>/<version>` 和 `/<pkg>/latest` 是实时的。
 
 ## 六、数据与产物位置
 
@@ -70,7 +77,17 @@ node <pnpm> pack --pack-destination ..   # 确认 core/ocr.ps1 在内
 1. **幻灯片型 PDF 切章**：core/outline.js 新增 chaptersFromSectionNumbers / chaptersByChars。L10 51 页 → 6 章，L12 54 页 → 9 章（此前均为 1–2 章）。判据：页数 ≥8 且每页 <260 字视为幻灯片型；页内 10.1 这类编号优先，否则按 700 字累积成章、用每页首行命名。
 2. **.ppt/.doc/.xls 支持**：index.js 上传放行旧格式 + prepareInputs 用 officeToPdf.convert 转 PDF 再走现有解析（标签保留原文件名）。实测 2-数据的机器级表示与处理.ppt（3.7 MB / 177 页）→ 转换成功、39,977 字、质量 good。
 3. **解析器资源上限**：core/zip.js（单条目 64 MB、总量 256 MB、5000 条目）与 core/pdf.js（20 万对象、流解压 64 MB）拦截压缩炸弹。
-4. **回归脚本**：
-ode tools/regress.mjs，9 项断言（字形反查、质量闸门、领域锚定、切章、备注、md 切章、可信度），全部通过。
+4. **回归脚本**：`node tools/regress.mjs`，9 项断言（字形反查、质量闸门、领域锚定、切章、备注、md 切章、可信度），全部通过。
 
 **仍粗糙**：177 页的「第二章」式中文编号课件只切出 2 章（第N章 与长文档的细分策略还没合并）；第 61 章 这类正文数字误判已修（行 ≤40 字、主编号 1–30、标签需 ≥2 汉字）。
+
+## 八、2026-10-23 18:27 会话（发布 + 同步）
+
+1. **npm 1.2.0 已发布并验证**：`latest`=1.2.0，description 为正常中文，tarball 73.9 KB / 26 条目（含 `core/ocr.ps1`）。发布命令：
+   `node <pnpm.mjs> publish --access public --no-git-checks`（先 `--dry-run` 跑一遍）。
+2. **GitHub 已 rebase 干净**：`4f9db4a` 与本地旧 `bcd0b9a` 树完全相同（历史被重写过），所以用
+   `git rebase --onto origin/main bcd0b9a main` 而非普通 rebase，避免重复提交。现在本地领先 5 个提交 + tag `v1.2.0`。
+   **push 未完成**——缺 GitHub PAT，见坑 10。
+3. **README 面板图**原来写 `docs/panel.png`，而 `files` 里没有 `docs/`，npm 页面是裂图；已改成 raw.githubusercontent 绝对链接。
+   这条改动要等**下一次发版**才会体现在 npm 页面。
+4. **HANDOFF 没有 A–G 字母编号**：任务只在「三、待办（按优先级）」1–6 条里。按上下文把 A/B 当作第 1、2 条（GitHub 同步、发 npm）处理。
