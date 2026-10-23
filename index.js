@@ -16,6 +16,7 @@ import { basename, join } from 'node:path'
 import { createStore, resolveDataDir } from './core/store.js'
 import { createBiliClient } from './core/bili.js'
 import { runPipeline } from './core/pipeline.js'
+import { ocrAvailable } from './core/ocr.js'
 import { markdownToDocx } from './core/docx.js'
 import { SUPPORTED } from './core/parser.js'
 
@@ -67,12 +68,16 @@ export function apply(ctx, config = {}) {
     log: (m) => ctx.logger?.info?.(m),
   })
   const jobs = new Map()
+  const jobInputs = new Map()
   const uploads = new Map()
   const disposers = []
 
   const optionsOf = (raw = {}) => ({
     withVideos: raw.withVideos !== false && config.withVideos !== false,
     concurrency: Math.max(1, Math.min(5, Number(raw.concurrency) || Number(config.concurrency) || 4)),
+    ocr: raw.ocr === true,
+    ocrMaxPages: Number(raw.ocrMaxPages) || Number(config.ocrMaxPages) || 60,
+    domain: config.domain || raw.domain || undefined,
   })
 
   function resolveLlm() {
@@ -106,6 +111,7 @@ export function apply(ctx, config = {}) {
       warnings: [],
     }
     jobs.set(id, job)
+    jobInputs.set(id, inputs)
     const llm = resolveLlm()
     runPipeline({
       id,
@@ -162,9 +168,10 @@ export function apply(ctx, config = {}) {
       if (path === `${ROUTE}/health`) {
         return send(res, 200, {
           ok: true,
-          version: '1.1.1',
+          version: '1.2.0',
           llm: !!resolveLlm(),
           pdf: !!ctx.get('officeToPdf')?.convert,
+          ocr: ocrAvailable(),
           dataDir: store.dataDir,
           supported: SUPPORTED,
           jobs: jobs.size,
@@ -199,6 +206,14 @@ export function apply(ctx, config = {}) {
           inputs.push({ path: saved.path, name: saved.name })
         }
         if (inputs.length > 12) return send(res, 400, { ok: false, reason: '一次最多处理 12 个文件' })
+        const job = await makeJob(inputs, optionsOf(body.options))
+        return send(res, 200, { ok: true, jobId: job.id })
+      }
+
+      if (path === `${ROUTE}/rerun` && req.method === 'POST') {
+        const body = JSON.parse((await readBody(req, 256 * 1024)).toString('utf8') || '{}')
+        const inputs = jobInputs.get(body.jobId)
+        if (!inputs?.length) return send(res, 404, { ok: false, reason: '原任务的上传文件已失效，请重新拖入文件' })
         const job = await makeJob(inputs, optionsOf(body.options))
         return send(res, 200, { ok: true, jobId: job.id })
       }

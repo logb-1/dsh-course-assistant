@@ -2,6 +2,7 @@
  * Markdown report assembly (the deliverable format is fixed by the request).
  */
 import { searchLink } from './bili.js'
+import { describeQuality } from './quality.js'
 
 const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim()
 
@@ -42,6 +43,9 @@ function chapterSection(c) {
   }
   for (const p of (s.important || []).filter(Boolean)) lines.push(`- ⭐ 重点：${p}`)
   for (const p of (s.difficult || []).filter(Boolean)) lines.push(`- ⚠️ 难点：${p}`)
+  if (s.lowConfidence) {
+    lines.push(`- 备注：本章要点与原文的重合度只有 ${Math.round((s.support || 0) * 100)}%，可能有推断成分，建议对照原页核对`)
+  }
   if (s.keywords?.length) lines.push(`- 关键词：${s.keywords.join(' / ')}`)
   if (c.summary?.error) lines.push(`- 备注：本章总结失败（${c.summary.error}），以上为本地兜底摘要`)
   return lines.join('\n')
@@ -128,9 +132,15 @@ export function buildReport(input) {
     `来源文件：${sourceLine || '（无）'}`,
     `章节数：${chapters.length}`,
     meta.model ? `总结模型：${meta.model}` : '',
+    meta.domain ? `领域锚定：${meta.domain.name}${meta.domain.source === 'config' ? '（配置）' : '（从课件代码特征识别）'}` : '',
+    meta.quality ? `文本可读性：${describeQuality(meta.quality)}` : '',
     meta.offline ? '总结方式：本地兜底（模型不可用）' : '',
   ].filter(Boolean)
   out.push(`> ${bits.join(' ｜ ')}`)
+  if (meta.quality?.tier === 'unusable') {
+    out.push('>')
+    out.push('> ⚠️ **文字层不可用**：这份文件里的文字没能被正确提取（多为导出型 PDF 的字形编码），下面的内容参考价值有限。建议改用原始 .pptx/.docx，或启用 OCR 重读。')
+  }
   if (meta.warnings?.length) {
     out.push('>')
     for (const w of meta.warnings) out.push(`> ⚠️ ${w}`)

@@ -159,6 +159,7 @@ function cleanChapterTitle(title) {
   return String(title || '')
     .replace(/^[★☆\s·•\-—]+/, '')
     .replace(/[（(][^）)]*(投入|PPT|ppt)[^）)]*[）)]\s*$/, '')
+    .replace(/^(幻灯片|slide)\s*\d+$/i, '')
     .trim()
 }
 
@@ -300,7 +301,9 @@ export function buildOutline(docs) {
     if (doc.outline?.length) chapters = chaptersFromPdfOutline(doc)
     if (!chapters && doc.blocks?.length) chapters = chaptersFromBlocks(doc)
     if (!chapters && doc.pages?.length) {
-      const weak = doc.kind === 'pdf' || !pageTitlesStrong(doc.pages)
+      // OCR pages carry a real first-line title, so page grouping beats text
+      // patterns (OCR text has no reliable heading markers)
+      const weak = doc.ocr ? false : doc.kind === 'pdf' || !pageTitlesStrong(doc.pages)
       if (weak) {
         const byText = chaptersFromText(docFullText(doc), doc.title).filter((c) => c.text.length > 200)
         if (byText.length >= 3) chapters = byText
@@ -319,7 +322,11 @@ export function buildOutline(docs) {
     docs.length === 1 ? docs[0].title || '课程' : docs.map((d) => d.title).filter(Boolean).join(' + ')
   return {
     courseTitle: courseTitle || '课程',
-    chapters: chapters.map((c, i) => ({ ...c, index: i + 1, title: cleanChapterTitle(c.title) })),
+    chapters: chapters.map((c, i) => ({
+      ...c,
+      index: i + 1,
+      title: cleanChapterTitle(c.title) || `第 ${i + 1} 部分`,
+    })),
     tree: buildTree(chapters.map((c) => ({ ...c, title: cleanChapterTitle(c.title) }))),
   }
 }

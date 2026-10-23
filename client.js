@@ -68,6 +68,11 @@ window.__ModuleLoader__.load({
     .ca-md a:hover{text-decoration:underline}
     .ca-md code{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;background:var(--dsw-alias-bg-layer-2);border-radius:4px;padding:0 4px}
     .ca-empty{color:var(--dsw-alias-label-secondary);padding:10px 0;font-size:12.5px}
+    .ca-feed{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;margin:12px 0;background:var(--dsw-alias-bg-layer-1)}
+    .ca-feed.warn{border-color:var(--dsw-alias-state-warn-primary)}
+    .ca-feed-q{font-size:13px;font-weight:600;margin-bottom:8px}
+    .ca-reason{color:var(--dsw-alias-label-secondary);font-size:12px;margin:2px 0 0 14px;list-style:disc}
+    .ca-gap{height:6px}
     .ca-dock{display:flex;align-items:center;gap:8px;font-size:11.5px;opacity:.9;padding:2px 0}
     .ca-dock button{border:none;background:transparent;color:var(--dsw-alias-brand-primary);cursor:pointer;font-size:11.5px;padding:0 4px}
     .ca-panel-icon{display:block}
@@ -199,6 +204,13 @@ window.__ModuleLoader__.load({
 
     const fmtSize = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`)
 
+    const qualityLabel = (q) => {
+      if (!q) return ''
+      const label = { good: '可读', fair: '一般', unusable: '不可用' }[q.tier] || q.tier
+      const m = q.metrics || {}
+      return `${label}（${m.charsPerUnit || 0} 字/${m.pageBased ? '页' : '节'}，全文 ${m.chars || 0} 字）`
+    }
+
     function DropZone({ onFiles, busy }) {
       const [hot, setHot] = useState(false)
       const inputRef = useRef(null)
@@ -263,6 +275,20 @@ window.__ModuleLoader__.load({
           job.elapsedMs ? h('span', { className: 'ca-phase' }, `· ${(job.elapsedMs / 1000).toFixed(1)}s`) : null,
         ),
         h('div', { className: 'ca-prog' }, h('i', { style: { width: `${Math.max(3, pct)}%` } })),
+        job.quality
+          ? h(
+              'div',
+              { className: 'ca-phase', style: { marginTop: 6 } },
+              `文本可读性：${qualityLabel(job.quality)}`,
+            )
+          : null,
+        job.domain
+          ? h(
+              'div',
+              { className: 'ca-phase', style: { marginTop: 4 } },
+              `领域锚定：${job.domain.name}${job.domain.source === 'config' ? '（配置）' : '（自动识别）'} · 网课检索与排序按此校正`,
+            )
+          : null,
         job.error ? h('div', { className: 'ca-err' }, job.error) : null,
         (job.warnings || []).slice(0, 4).map((w, i) => h('div', { className: 'ca-note', key: i }, w)),
       )
@@ -386,6 +412,70 @@ window.__ModuleLoader__.load({
             ),
           ),
         ),
+      )
+    }
+
+    function Feedback({ job, health, busy, onRerun, onPickFiles }) {
+      const [ack, setAck] = useState(false)
+      const [open, setOpen] = useState(false)
+      if (!job || job.status !== 'done') return null
+      const q = job.quality
+      const poor = q && q.tier !== 'good'
+      if (ack) {
+        return h('div', { className: 'ca-feed' }, h('div', { className: 'ca-feed-q' }, '已确认，这份报告可以直接用。'))
+      }
+      return h(
+        'div',
+        { className: `ca-feed${poor ? ' warn' : ''}` },
+        h('div', { className: 'ca-feed-q' }, poor ? '结果可能不太对：这份文件的文字没读全，要继续吗？' : '这次结果符合你的预期吗？'),
+        poor && q.reasons?.length
+          ? h('ul', { className: 'ca-reason' }, q.reasons.slice(0, 3).map((r, i) => h('li', { key: i }, r)))
+          : null,
+        h(
+          'div',
+          { className: 'ca-row', style: { marginTop: 10 } },
+          h('button', { className: 'ca-btn pri', onClick: () => setAck(true) }, '符合，就这样'),
+          h('button', { className: 'ca-btn', onClick: () => setOpen((v) => !v) }, open ? '收起' : '不太行，换个方式'),
+        ),
+        open
+          ? h(
+              'div',
+              { style: { marginTop: 10 } },
+              h(
+                'div',
+                { className: 'ca-row' },
+                h(
+                  'button',
+                  {
+                    className: 'ca-btn',
+                    disabled: busy,
+                    onClick: () => {
+                    onRerun({ withVideos: false })
+                  },
+                  },
+                  '关闭网课检索后重跑',
+                ),
+                h('button', { className: 'ca-btn', disabled: busy, onClick: onPickFiles }, '换源文件（.pptx/.docx）'),
+                h(
+                  'button',
+                  {
+                    className: 'ca-btn',
+                    disabled: busy || !health?.ocr,
+                    title: health?.ocr ? '用 OCR 重新读取页面' : '当前环境未启用 OCR',
+                    onClick: () => onRerun({ ocr: true }),
+                  },
+                  health?.ocr ? 'OCR 重读' : 'OCR 重读（未启用）',
+                ),
+              ),
+              h(
+                'div',
+                { className: 'ca-note', style: { marginTop: 8 } },
+                poor
+                  ? '优先换源文件：导出型 PDF 的汉字常以字形编号存储，转格式也救不回来；原始 .pptx/.docx 能 100% 读到文字。'
+                  : '如果章节切得太碎或太粗，换源文件通常比调参更有效。',
+              ),
+            )
+          : null,
       )
     }
 
@@ -522,6 +612,29 @@ window.__ModuleLoader__.load({
         setPhase('idle')
       }
 
+      const rerun = async (options) => {
+        const jobId = job?.id
+        if (!jobId || phase === 'running') return
+        setError('')
+        setPhase('running')
+        try {
+          const res = await fetch(`${ROUTE}/rerun`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ jobId, options }),
+          })
+          const data = await res.json()
+          if (!data.ok) throw new Error(data.reason || '重跑失败')
+          setReport('')
+          setJob({ id: data.jobId, status: 'running', phase: 'queued', message: '重新解析…', progress: 0.01, chapters: [], byChapter: {}, series: [] })
+          poll(data.jobId)
+        } catch (e) {
+          setPhase('error')
+          setError(String(e.message || e))
+        }
+      }
+
       const busy = phase === 'uploading' || phase === 'running'
       const jobId = job?.id
       const download = (fmt) => {
@@ -592,6 +705,7 @@ window.__ModuleLoader__.load({
             error ? h('div', { className: 'ca-err' }, error) : null,
           ),
           h(Progress, { job }),
+          h(Feedback, { job, health, busy, onRerun: rerun, onPickFiles: reset }),
           job?.chapters?.length
             ? h(
                 'div',

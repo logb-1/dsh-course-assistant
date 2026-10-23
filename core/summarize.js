@@ -5,7 +5,8 @@
  * one fixed template, the reply is a fixed JSON object, and the course summary
  * only sees earlier key_points — never the source text again.
  */
-export const CHAPTER_PROMPT_VERSION = 2
+import { anchorQuery } from './domain.js'
+export const CHAPTER_PROMPT_VERSION = 3
 const MAX_CHAPTER_CHARS = 3600
 
 const SYSTEM = [
@@ -14,6 +15,7 @@ const SYSTEM = [
   '要求：key_points 3-6 条，每条不超过 40 字，必须来自给定原文，不要编造案例；important/difficult 各 0-2 条；',
   '原文信息不足时（例如整页只有图），就用原文里实际出现的词写短句，不要用通用教科书理论补全。',
   'keywords 2-4 个，用「学科领域 + 具体概念」的组合词，直接在 B 站能搜到该章网课（例如「计算机系统 缓存 命中率」「国际贸易 政策评估」），不要用「论证逻辑」这类通用方法论词。',
+  '如果给出了「课程领域」，keywords 必须以该领域词开头（例如 C++ 课就写「C++ 异常处理」），严禁写成其它语言（Python/Java 等）。',
 ].join('\n')
 
 const SUMMARY_SYSTEM = '你是大学课程助教。用中文写一段不超过 300 字的全课程总结，不要标题、不要列表、不要 Markdown。'
@@ -120,7 +122,7 @@ export function truncate(text, max = MAX_CHAPTER_CHARS) {
   return `${head}\n…（中间略）…\n${tail}`
 }
 
-export async function summarizeChapter({ llm, provider, model, courseTitle, chapter, outline, signal }) {
+export async function summarizeChapter({ llm, provider, model, courseTitle, chapter, outline, domain, signal }) {
   const outlineLine = outline?.length
     ? `全课程目录（只用于判断本章定位，不要复述）：${outline
         .slice(0, 24)
@@ -129,6 +131,7 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
     : ''
   const prompt = [
     `课程名：${courseTitle}`,
+    domain ? `课程领域：${domain.name}（本章 keywords 必须以「${domain.name}」开头）` : '',
     outlineLine,
     `本章：第 ${chapter.index} 章 ${chapter.title}`,
     chapter.subs?.length ? `本节标题：${chapter.subs.slice(0, 8).join(' / ')}` : '',
@@ -165,12 +168,22 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
     if (!parsed.difficult.length) parsed.difficult = []
     parsed.partial = true
   }
-  const keywords = filterKeywords(parsed.keywords)
+  const keywords = anchorKeywords(filterKeywords(parsed.keywords), domain)
   return {
     ...parsed,
     chapter: parsed.chapter || chapter.title,
-    keywords: keywords.length ? keywords : localSummary(chapter).keywords,
+    keywords: keywords.length ? keywords : anchorKeywords(localSummary(chapter).keywords, domain),
   }
+}
+
+/**
+ * The model sometimes names the wrong language ("Python 异常处理" for a C++
+ * chapter). Replace the foreign language token rather than prefixing it, so the
+ * report and the Bilibili query both carry the course domain.
+ */
+export function anchorKeywords(list, domain) {
+  if (!domain) return list
+  return list.map((raw) => anchorQuery(raw, domain)).filter(Boolean)
 }
 
 const GENERIC_KEYWORD = /^(摘要|一页摘要|目录|参考文献|附录|小结|总结|概述|引言|前言|致谢|封面|标题页|正文|本章|全文)$/

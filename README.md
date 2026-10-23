@@ -36,6 +36,34 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 附录不会为空：检索被风控或没有相关结果时，该行退化为
 `https://search.bilibili.com/all?keyword=<URL编码关键词>` 搜索入口。
 
+## 1.2.0 新增：读不准时的处理
+
+**质量闸门**（解析后立即算，纯本地）——四项指标：每页字数、可疑字符率、空页率、成词率。判定 `good / fair / unusable`，报告头部直接写出来，例如：
+
+> 文本可读性：不可用（73 字/页，全文 3719 字，空页 18%，可疑字符 9%）
+> ⚠️ **文字层不可用**：这份文件里的文字没能被正确提取（多为导出型 PDF 的字形编码）…
+
+**面板反馈**：报告出来后问「这次结果符合你的预期吗？」，选"_不太行_"展开三条补救：换源文件（最优）／OCR 重读／关闭网课检索重跑。`/rerun` 复用原上传文件，不丢输入。
+
+**OCR 重读**（可选）：WinRT 渲染 + Windows OCR（zh-CN），约 1 秒/页，默认上限 60 页。仅 Windows；`health.ocr` 会用来说明是否可用。
+
+**领域锚定**：从代码特征识别课程语言（`#include`/`std::`/`cout` → C++；`System.out` → Java…），然后
+
+- 章节关键词强制带域：「Python 异常处理」→「C++ 异常处理」
+- B 站查询加前缀：`C++ 异常处理`
+- 排序时丢弃**跨语言**结果（C++ 课不会推 Java 教程），命中本域的加权
+
+识别不准时可在配置里写死：`domain: 'C++'`。
+
+**另外四项小改进**：
+
+| 改进 | 效果 |
+|---|---|
+| 演讲者备注 | 读 `notesSlides`，讲义备注往往是完整讲稿；实测 34 页 PPT 多出约 6 400 字 |
+| 编码还原 | 无 ToUnicode 的字体先按 GBK/Big5 再解一次，能救"GBK 字节被当 Latin-1"的老 PDF |
+| 同名源文件择优 | 同时拖 `x.pptx` 与 `x.pdf` 时自动用 pptx，并提示跳过了哪个 |
+| 要点重合计分 | 每章要点与原文算 bigram 重合度，低于 30% 标「可能有推断成分」 |
+
 ## 安装 / 重载
 
 前置条件两条：**装好 DeepSeek Harness**；profile 里**配好一个可用模型**（缺失时会退回本地抽取摘要）。
@@ -94,6 +122,8 @@ install_bundle(target="github:logb-1/dsh-course-assistant")
 | `concurrency` | `4` | 并发总结章节数，1–5 |
 | `withVideos` | `true` | 全局关闭 B 站检索 |
 | `provider` / `model` | profile 默认模型 | 覆盖总结模型（默认取 `agentDefaultModel`） |
+| `domain` | 自动识别 | 强制课程领域，如 `C++`；用于代码特征太碎、识别不出的文件 |
+| `ocrMaxPages` | `60` | OCR 重读的页数上限 |
 | `spacingMs` | `1000` | B 站请求间隔 |
 | `keepUploadsDays` | `7` | 上传文件保留天数 |
 

@@ -335,6 +335,44 @@ function hexToUnicode(hex) {
 
 /* ------------------------------- content ------------------------------- */
 
+const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
+
+function cjkScore(s) {
+  const t = String(s || '').replace(/\s/g, '')
+  if (!t) return 0
+  let n = 0
+  for (const ch of t) if (CJK_RE.test(ch)) n += 1
+  return n / t.length
+}
+
+let gbkDecoder = null
+let big5Decoder = null
+
+/**
+ * A PDF string is just bytes. When the font carries no Unicode map, those bytes
+ * are frequently GBK/Big5 text that a naive latin1 decode turns into mojibake
+ * ("锟斤拷" style). Try the CJK code pages and keep whichever reads as Chinese.
+ */
+function reinterpretBytes(raw) {
+  if (!/[\u0080-\u00ff]/.test(raw)) return raw
+  const bytes = Buffer.from(raw, 'latin1')
+  let best = raw
+  let bestScore = cjkScore(raw)
+  for (const kind of ['gbk', 'big5']) {
+    try {
+      if (kind === 'gbk' && !gbkDecoder) gbkDecoder = new TextDecoder('gbk')
+      if (kind === 'big5' && !big5Decoder) big5Decoder = new TextDecoder('big5')
+      const decoded = (kind === 'gbk' ? gbkDecoder : big5Decoder).decode(bytes)
+      const score = cjkScore(decoded)
+      if (score > bestScore + 0.25) {
+        best = decoded
+        bestScore = score
+      }
+    } catch {}
+  }
+  return best
+}
+
 function decodeString(raw, font) {
   if (font?.cmap?.size) {
     const step = font.codeBytes || 2
@@ -350,7 +388,7 @@ function decodeString(raw, font) {
     return out
   }
   if (font?.twoByte) return ''
-  return raw
+  return reinterpretBytes(raw)
 }
 
 function contentToText(content, fonts) {

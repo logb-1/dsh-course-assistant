@@ -14,6 +14,10 @@ import { parseFile } from './parser.js'
 import { buildOutline } from './outline.js'
 import { summarizeChapter, summarizeCourse, mapLimit, localSummary, CHAPTER_PROMPT_VERSION } from './summarize.js'
 import { buildReport } from './report.js'
+import { assessQuality, describeQuality } from './quality.js'
+import { ocrPdf, ocrAvailable } from './ocr.js'
+import { detectDomain } from './domain.js'
+import { supportScore, SUPPORT_THRESHOLD } from './verify.js'
 
 const sha = (text) => createHash('sha256').update(text).digest('hex').slice(0, 24)
 
@@ -62,12 +66,17 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   push({})
 
   /* ---------------- 1. parse ---------------- */
-  const docs = []
+  let docs = []
   for (const input of inputs) {
     const label = input.name || basename(input.path)
     try {
       const doc = parseFile(input.path, input.name)
       doc.name = label
+      doc.sourcePath = input.path
+      // "幻灯片 12" is a slide-number placeholder, not a course title
+      if (/^(幻灯片|slide)\s*\d+$/i.test(String(doc.title || '').trim())) {
+        doc.title = label.replace(/\.[^.]+$/, '')
+      }
       docs.push(doc)
       job.files.push({ name: label, kind: doc.kind, pages: doc.pages?.length || 0, title: doc.title })
     } catch (error) {
@@ -78,12 +87,79 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     push({ status: 'error', phase: 'error', error: `所有文件都无法解析：${warnings.join('；')}`, progress: 1 })
     return job
   }
+  // Prefer the Office source over an exported PDF of the same deck: the XML text
+  // is complete, the PDF text often only carries glyph ids.
+  const stem = (name) => String(name || '').replace(/\.[^.]+$/, '').toLowerCase().trim()
+  const twinsDropped = []
+  const kept = docs.filter((doc) => {
+    if (doc.kind !== 'pdf') return true
+    const twin = docs.find((d) => d !== doc && d.kind !== 'pdf' && stem(d.name) === stem(doc.name))
+    if (twin) {
+      twinsDropped.push(`${doc.name}（改用 ${twin.name}）`)
+      return false
+    }
+    return true
+  })
+  if (twinsDropped.length) {
+    docs = kept
+    warnings.push(`同名的 PDF 已跳过：${twinsDropped.join('、')} 的文本更可靠`)
+  }
   const scanned = docs.filter((d) => d.kind === 'pdf' && d.pages.length && d.pages.every((p) => p.text.length < 40))
   if (scanned.length) warnings.push(`疑似扫描版 PDF（无文本层）：${scanned.map((d) => d.name).join('、')}`)
-  push({ phase: 'outline', message: '识别目录…', progress: 0.14 })
+
+  /* ---------------- 1.4 optional OCR re-read ---------------- */
+  if (options?.ocr === true) {
+    const targets = docs.filter((d) => d.kind === 'pdf' && d.sourcePath && ocrAvailable())
+    if (!targets.length) warnings.push('OCR 不可用：当前环境没有可用的 Windows OCR')
+    for (const doc of targets) {
+      try {
+        push({ phase: 'ocr', message: `OCR 重读：${doc.name}`, progress: 0.05 })
+        const pages = await ocrPdf(doc.sourcePath, {
+          maxPages: Number(options.ocrMaxPages) || 60,
+          onProgress: (done, total) =>
+            push({
+              message: `OCR 第 ${done}/${total || '?'} 页：${doc.name}`,
+              progress: Math.min(0.16, 0.05 + 0.11 * (done / Math.max(1, total || done))),
+            }),
+        })
+        if (pages.length) {
+          doc.pages = pages.map((p, i) => ({ index: i + 1, title: p.title || '', text: p.text }))
+          doc.text = pages.map((p) => p.text).join('\n\n')
+          doc.ocr = true
+          job.files = job.files.map((f) => (f.name === doc.name ? { ...f, pages: doc.pages.length, ocr: true } : f))
+        }
+      } catch (error) {
+        warnings.push(`OCR 失败（${doc.name}）：${error.message}`)
+      }
+    }
+  }
+
+  /* ---------------- 1.5 quality gate ---------------- */
+  const quality = assessQuality(docs)
+  if (quality.tier !== 'good') {
+    warnings.push(`文本可读性${quality.tier === 'unusable' ? '不可用' : '偏低'}：${describeQuality(quality)}`)
+    for (const reason of quality.reasons.slice(0, 2)) warnings.push(reason)
+  }
+  push({
+    quality,
+    phase: 'outline',
+    message: quality.tier === 'unusable' ? '文字层不可用，仍按现状生成报告…' : '识别目录…',
+    progress: 0.14,
+  })
 
   /* ---------------- 2. outline ---------------- */
   const outline = buildOutline(docs)
+  // Anchor the whole run to one language/domain so chapter searches cannot drift
+  // (a C++ lecture must not surface Python/Java tutorials for "异常处理").
+  const domain = detectDomain(docs, options?.domain)
+  if (domain) {
+    job.domain = { id: domain.id, name: domain.name, source: domain.source, score: domain.score }
+  }
+  // a garbled file yields a garbled title; fall back to the file name
+  if (quality.tier === 'unusable') {
+    const name = (docs[0]?.name || docs[0]?.fileName || '').replace(/\.[^.]+$/, '')
+    if (name) outline.courseTitle = name
+  }
   const chapters = outline.chapters.map((c) => ({
     index: c.index,
     title: c.title,
@@ -115,7 +191,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     options?.withVideos === false
       ? Promise.resolve({ ok: true, series: [], fallback: false })
       : bili
-          .recommendSeries(outline.courseTitle)
+          .recommendSeries(outline.courseTitle, { domain })
           .catch((e) => ({ ok: false, series: [], fallback: true, reason: e.message }))
 
   let doneCount = 0
@@ -139,6 +215,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
               courseTitle: outline.courseTitle,
               chapter,
               outline: outlineTitles,
+              domain,
               signal,
             })
             await store.cache.set(cacheKey, summary, 30 * 86400 * 1000)
@@ -152,6 +229,16 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       }
       chapter.summary = summary
       chapter.status = 'done'
+      // did the bullets actually come from this chapter's text?
+      try {
+        const support = supportScore(text, summary.key_points || [])
+        summary.support = support
+        chapter.support = support
+        if (support < SUPPORT_THRESHOLD) {
+          summary.lowConfidence = true
+          warnings.push(`第 ${chapter.index} 章要点与原文重合度仅 ${Math.round(support * 100)}%，可能有推断成分`)
+        }
+      } catch {}
       doneCount += 1
       push({
         message: `总结第 ${chapter.index}/${chapters.length} 章：${chapter.title.slice(0, 24)}`,
@@ -161,7 +248,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       if (options?.withVideos !== false) {
         try {
           const keywords = (summary.keywords || []).slice(0, chapterQueries)
-          const res = await bili.recommendChapter(keywords.length ? keywords : [chapter.title])
+          const res = await bili.recommendChapter(keywords.length ? keywords : [chapter.title], { domain })
           job.byChapter[chapter.index] = {
             videos: res.videos.map((v) => ({
               bvid: v.bvid,
@@ -211,7 +298,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       .slice(0, 2)
     if (topKeywords.length) {
       try {
-        const refined = await bili.recommendSeries(outline.courseTitle, { extraQueries: topKeywords })
+        const refined = await bili.recommendSeries(outline.courseTitle, { extraQueries: topKeywords, domain })
         if ((refined.series?.length || 0) > series.length) series = refined.series
         if (refined.links?.length) seriesLinks = [...refined.links, ...seriesLinks].slice(0, 3)
       } catch (error) {
@@ -261,6 +348,8 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       model: modelLabel,
       elapsedMs: job.elapsedMs,
       warnings,
+      quality,
+      domain: job.domain,
       offline: !useModel || chapters.every((c) => c.summary?.offline),
       generatedAt: new Date().toISOString().slice(0, 19).replace('T', ' '),
     },

@@ -8,6 +8,7 @@
  * no account data and no login.
  */
 import { createHash } from 'node:crypto'
+import { anchorQuery, conflictsDomain, mentionsDomain } from './domain.js'
 
 const MIXIN_TAB = [
   46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9,
@@ -252,18 +253,23 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
     }
   }
 
-  /** Rank candidates for one query set; drops short and clearly unrelated videos. */
-  function rank(items, keywords, { minDuration = MIN_DURATION_SEC } = {}) {
+  /** Rank candidates for one query set; drops short, unrelated and cross-language videos. */
+  function rank(items, keywords, { minDuration = MIN_DURATION_SEC, domain = null } = {}) {
     const seen = new Set()
     return items
       .filter((it) => {
         if (seen.has(it.bvid)) return false
         seen.add(it.bvid)
         if (it.duration && it.duration < minDuration) return false
+        // a Java tutorial must not answer a C++ chapter
+        if (conflictsDomain(`${it.title} ${it.description || ''} ${it.tag || ''}`, domain)) return false
         if (!keywords.length) return true
         return matchScore(it, keywords) > 0
       })
-      .map((it) => ({ ...it, score: Number(scoreItem(it, keywords).toFixed(3)), series: SERIES_HINT.test(it.title) }))
+      .map((it) => {
+        const boosted = scoreItem(it, keywords) + (mentionsDomain(it.title, domain) ? 0.06 : 0)
+        return { ...it, score: Number(Math.min(1, boosted).toFixed(3)), series: SERIES_HINT.test(it.title) }
+      })
       .sort((a, b) => b.score - a.score)
   }
 
@@ -273,12 +279,17 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
    * @param {{limit?:number, extraQueries?:string[]}} [opts] extraQueries come from
    *        the chapter keywords, which are only known after summarization.
    */
-  async function recommendSeries(courseTitle, { limit = 3, extraQueries = [] } = {}) {
+  async function recommendSeries(courseTitle, { limit = 3, extraQueries = [], domain = null } = {}) {
     const base = cleanTitle(courseTitle)
+    const anchored = domain ? anchorQuery(base, domain) : base
     const queries = [
-      ...new Set([`${base} 合集`, ...extraQueries.map((q) => `${q} 教程`), `${base} 全套`].filter(Boolean)),
+      ...new Set([
+        `${anchored} 合集`,
+        ...extraQueries.map((q) => `${anchorQuery(q, domain)} 教程`),
+        `${anchored} 全套`,
+      ].filter(Boolean)),
     ].slice(0, 4)
-    const keywords = tokens(`${base} ${extraQueries.join(' ')}`).slice(0, 14)
+    const keywords = tokens(`${base} ${domain ? domain.name : ''} ${extraQueries.join(' ')}`).slice(0, 14)
     const pool = []
     let ok = false
     let reason = ''
@@ -288,7 +299,7 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
       else reason = res.reason
       pool.push(...res.items)
     }
-    const ranked = rank(pool, keywords, { minDuration: 600 })
+    const ranked = rank(pool, keywords, { minDuration: 600, domain })
     // a series must be an actual collection *and* on topic; near-hits stay out
     const series = ranked.filter((it) => (it.series && it.score >= 0.3) || it.score >= 0.52).slice(0, limit)
     const links = [...new Set([...queries, base])].slice(0, 3).map((q) => ({ label: q, url: searchLink(q) }))
@@ -297,10 +308,20 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
 
   /**
    * Search one chapter's videos using the model-provided keywords.
+   * Every query is anchored to the course domain ("C++ 异常处理"), and results
+   * from a different language are dropped — the "Java videos for a C++ lecture"
+   * failure mode.
    * @param {string[]} keywords 1–2 search terms
    */
-  async function recommendChapter(keywords, { limit = 3 } = {}) {
-    const queries = [...new Set(keywords.map((k) => String(k || '').trim()).filter(Boolean))].slice(0, 2)
+  async function recommendChapter(keywords, { limit = 3, domain = null } = {}) {
+    const queries = [
+      ...new Set(
+        keywords
+          .map((k) => String(k || '').trim())
+          .filter(Boolean)
+          .map((k) => anchorQuery(k, domain)),
+      ),
+    ].slice(0, 2)
     const pool = []
     let ok = false
     let reason = ''
@@ -310,9 +331,15 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
       else reason = res.reason
       pool.push(...res.items)
     }
-    const kw = tokens(queries.join(' '))
+    const kw = tokens(`${queries.join(' ')} ${domain ? domain.name : ''}`)
     // one incidental word match is not enough: require a real hit score
-    return { ok, fallback: !ok, reason, queries, videos: rank(pool, kw).filter((v) => v.score >= 0.28).slice(0, limit) }
+    return {
+      ok,
+      fallback: !ok,
+      reason,
+      queries,
+      videos: rank(pool, kw, { domain }).filter((v) => v.score >= 0.28).slice(0, limit),
+    }
   }
 
   return {

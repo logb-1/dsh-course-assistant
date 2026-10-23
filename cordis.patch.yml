@@ -4,6 +4,9 @@
 #   concurrency  parallel chapter summaries, 1-5 (default 4)
 #   withVideos   default true; false skips every Bilibili request
 #   provider/model  summary model; omitted = the profile's default model
+#   domain       force the course domain, e.g. 'C++' (default: auto-detected
+#                from code fragments such as #include / std:: / cout)
+#   ocrMaxPages  cap for OCR re-reads (default 60)
 - insert:
     - id: course-assistant
       name: 'dsh-course-assistant'

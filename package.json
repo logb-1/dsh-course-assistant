@@ -1,6 +1,6 @@
 {
   "name": "dsh-course-assistant",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": false,
   "type": "module",
   "description": "课程文件 → 目录识别 · 分章知识点总结 · B 站网课推荐 · 学习报告（DeepSeek Harness bundle）",
@@ -36,6 +36,7 @@
     "client.js",
     "cordis.patch.yml",
     "core/*.js",
+    "core/ocr.ps1",
     "locale/*.json",
     "icon.svg",
     "README.md",

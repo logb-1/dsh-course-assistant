@@ -134,10 +134,37 @@ export function parsePptx(buf, fileName) {
     if (!xml) continue
     const s = extractSlide(xml)
     if (!s.text) continue
-    pages.push({ index: pages.length + 1, title: s.title, text: s.text })
+    // speaker notes usually hold the full script; without them a slide deck
+    // reads like a list of titles
+    const notes = slideNotes(zip, name)
+    const text = notes ? `${s.text}\n【备注】${notes}` : s.text
+    pages.push({ index: pages.length + 1, title: s.title, text, notes })
   }
   const title = guessDeckTitle(pages, fileName)
   return { kind: 'pptx', title, pages, blocks: [] }
+}
+
+/** Notes slide text for one slide part, or '' when the deck has none. */
+function slideNotes(zip, slidePart) {
+  const base = slidePart.slice(slidePart.lastIndexOf('/') + 1)
+  const relsXml = zip.text(`ppt/slides/_rels/${base}.rels`)
+  if (!relsXml) return ''
+  const rels = parseRels(relsXml)
+  for (const rel of rels.values()) {
+    if (!/notesSlide/.test(rel.type || '')) continue
+    const part = resolvePart('ppt/slides', rel.target)
+    const xml = zip.text(part)
+    if (!xml) continue
+    const lines = []
+    for (const sp of xml.matchAll(/<p:sp\b[\s\S]*?<\/p:sp>/g)) {
+      const ph = /<p:ph\b([^>]*)\/?>/.exec(sp[0])
+      const type = ph ? (/\btype="([^"]+)"/.exec(ph[1]) || [])[1] || 'body' : ''
+      if (['sldNum', 'ftr', 'hdr', 'dt'].includes(type)) continue
+      lines.push(...shapeParagraphs(sp[0]))
+    }
+    return squash(lines.join('\n'))
+  }
+  return ''
 }
 
 function guessDeckTitle(pages, fileName) {
