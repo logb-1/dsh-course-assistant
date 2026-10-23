@@ -53,6 +53,9 @@ export function applyAssessment({ summary, chapter, text, warnings }) {
   summary.support = confidence.overlap
   summary.lowConfidence = confidence.tier === 'suspect' || confidence.tier === 'weak'
   if (chapter) {
+    // the caller used to set these two; keep them here so every path agrees
+    chapter.summary = summary
+    chapter.status = 'done'
     chapter.confidence = confidence
     chapter.support = confidence.overlap
   }
