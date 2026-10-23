@@ -130,12 +130,17 @@ function findEndobj(s, from) {
   return idx === -1 ? s.length : idx
 }
 
+/** A legitimate lecture PDF never needs more than this; bombs do. */
+const MAX_OBJECTS = 200000
+const MAX_STREAM_BYTES = 64 * 1024 * 1024
+
 function scanObjects(buf) {
   const s = buf.toString('latin1')
   const objects = new Map()
   const re = /(?:^|[\r\n\s])(\d+)\s+(\d+)\s+obj\b/g
   let m
   while ((m = re.exec(s))) {
+    if (objects.size >= MAX_OBJECTS) throw new Error(`PDF has too many objects (> ${MAX_OBJECTS})`)
     const start = m.index + m[0].length
     const end = findEndobj(s, start)
     const body = s.slice(start, end)
@@ -171,10 +176,10 @@ function scanObjects(buf) {
 function inflate(data) {
   if (!data || !data.length) return ''
   try {
-    return inflateSync(data).toString('latin1')
+    return inflateSync(data, { maxOutputLength: MAX_STREAM_BYTES }).toString('latin1')
   } catch {}
   try {
-    return inflateRawSync(data).toString('latin1')
+    return inflateRawSync(data, { maxOutputLength: MAX_STREAM_BYTES }).toString('latin1')
   } catch {}
   return null
 }
@@ -249,10 +254,10 @@ function decodeStream(data, dict) {
 
 function inflateSyncFallback(data) {
   try {
-    return inflateSync(data)
+    return inflateSync(data, { maxOutputLength: MAX_STREAM_BYTES })
   } catch {}
   try {
-    return inflateRawSync(data)
+    return inflateRawSync(data, { maxOutputLength: MAX_STREAM_BYTES })
   } catch {}
   return null
 }

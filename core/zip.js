@@ -12,6 +12,11 @@ const EOCD_SIG = 0x06054b50
 const CD_SIG = 0x02014b50
 const LOCAL_SIG = 0x04034b50
 
+/** Per-entry and total inflation caps: a deck never needs more than this. */
+const MAX_ENTRY_BYTES = 64 * 1024 * 1024
+const MAX_TOTAL_BYTES = 256 * 1024 * 1024
+const MAX_ENTRIES = 5000
+
 function findEOCD(buf) {
   const min = Math.max(0, buf.length - 0xffff - 22)
   for (let i = buf.length - 22; i >= min; i--) {
@@ -23,14 +28,20 @@ function findEOCD(buf) {
 export function readZip(buf) {
   const eocd = findEOCD(buf)
   const count = buf.readUInt16LE(eocd + 10)
+  if (count > MAX_ENTRIES) throw new Error(`zip has too many entries (${count})`)
   const cdOffset = buf.readUInt32LE(eocd + 16)
   const entries = new Map()
+  let total = 0
   let p = cdOffset
   for (let i = 0; i < count; i++) {
     if (buf.readUInt32LE(p) !== CD_SIG) break
     const method = buf.readUInt16LE(p + 10)
     const compSize = buf.readUInt32LE(p + 20)
     const rawSize = buf.readUInt32LE(p + 24)
+    // declared sizes are attacker-controlled; cap before any inflation happens
+    if (rawSize > MAX_ENTRY_BYTES) throw new Error(`zip entry too large (${Math.round(rawSize / 1048576)} MB)`)
+    total += rawSize
+    if (total > MAX_TOTAL_BYTES) throw new Error('zip expands beyond the size limit')
     const nameLen = buf.readUInt16LE(p + 28)
     const extraLen = buf.readUInt16LE(p + 30)
     const commentLen = buf.readUInt16LE(p + 32)
@@ -59,7 +70,13 @@ export function readZip(buf) {
       const start = lo + 30 + nameLen + extraLen
       const slice = buf.subarray(start, start + e.compSize)
       if (e.method === 0) return Buffer.from(slice)
-      if (e.method === 8) return inflateRawSync(slice)
+      if (e.method === 8) {
+        // guard against compression bombs: a 1 KB entry can inflate to gigabytes
+        if (e.rawSize > MAX_ENTRY_BYTES) {
+          throw new Error(`zip entry too large (${Math.round(e.rawSize / 1048576)} MB): ${name}`)
+        }
+        return inflateRawSync(slice, { maxOutputLength: MAX_ENTRY_BYTES })
+      }
       throw new Error(`unsupported zip method ${e.method}: ${name}`)
     },
     text(name) {

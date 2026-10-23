@@ -64,3 +64,13 @@ node <pnpm> pack --pack-destination ..   # 确认 core/ocr.ps1 在内
 - 示例报告：`course-assistant/samples/`（已 gitignore，含个人课件内容，不发布）
 - 小红书文案：工作区 `xhs-drafts.json` + `xhs-check.mjs`（校验脚本）
 - 精简版提示词 + PDF：桌面 `课程助手插件_提示词_精简版.md/.pdf`
+
+## 七、2026-10-23 追加完成（第 4 轮）
+
+1. **幻灯片型 PDF 切章**：core/outline.js 新增 chaptersFromSectionNumbers / chaptersByChars。L10 51 页 → 6 章，L12 54 页 → 9 章（此前均为 1–2 章）。判据：页数 ≥8 且每页 <260 字视为幻灯片型；页内 10.1 这类编号优先，否则按 700 字累积成章、用每页首行命名。
+2. **.ppt/.doc/.xls 支持**：index.js 上传放行旧格式 + prepareInputs 用 officeToPdf.convert 转 PDF 再走现有解析（标签保留原文件名）。实测 2-数据的机器级表示与处理.ppt（3.7 MB / 177 页）→ 转换成功、39,977 字、质量 good。
+3. **解析器资源上限**：core/zip.js（单条目 64 MB、总量 256 MB、5000 条目）与 core/pdf.js（20 万对象、流解压 64 MB）拦截压缩炸弹。
+4. **回归脚本**：
+ode tools/regress.mjs，9 项断言（字形反查、质量闸门、领域锚定、切章、备注、md 切章、可信度），全部通过。
+
+**仍粗糙**：177 页的「第二章」式中文编号课件只切出 2 章（第N章 与长文档的细分策略还没合并）；第 61 章 这类正文数字误判已修（行 ≤40 字、主编号 1–30、标签需 ≥2 汉字）。

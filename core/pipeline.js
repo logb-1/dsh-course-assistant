@@ -70,6 +70,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   for (const input of inputs) {
     const label = input.name || basename(input.path)
     try {
+      if (input.convertError) throw new Error(`旧格式转换失败：${input.convertError}`)
       const doc = parseFile(input.path, input.name)
       doc.name = label
       doc.sourcePath = input.path

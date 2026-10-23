@@ -99,8 +99,107 @@ function chaptersFromPages(doc) {
   }))
 }
 
-function chapterTitleFor(pages, i) {
-  const t = norm(pages[0]?.title)
+/**
+ * Sparse, slide-like documents: accumulate pages until a chapter is long enough
+ * and name it after the first line of its first page. Fixed 5-page chunks drift
+ * away from the deck's own section boundaries, and one page per chapter makes
+ * hundreds of tiny summaries.
+ */
+function chaptersByChars(doc) {
+  const pages = doc.pages || []
+  if (pages.length < 8) return null
+  const total = pages.reduce((n, p) => n + (p.text || '').length, 0)
+  if (total / pages.length >= 260) return null // dense text: normal chaptering applies
+  const target = 700
+  const out = []
+  let current = []
+  let length = 0
+  const flush = () => {
+    if (!current.length) return
+    const first = current[0]
+    const raw = norm(first.title || '') || norm(String(first.text || '').split('\n')[0])
+    const title = cleanChapterTitle(raw) || `第 ${out.length + 1} 部分`
+    out.push({
+      index: out.length + 1,
+      title,
+      pages: current.map((p) => p.index),
+      subs: current.map((p) => p.title).filter(Boolean),
+      text: current.map((p) => p.text).join('\n\n'),
+      source: 'slides',
+    })
+    current = []
+    length = 0
+  }
+  for (const page of pages) {
+    current.push(page)
+    length += (page.text || '').length
+    if (length >= target) flush()
+  }
+  flush()
+  return out.length ? out : null
+}
+
+/**
+ * Slide-deck PDFs label each page with a section number ("10.1 异常处理").
+ * Grouping pages by the major number turns a 54-page deck into chapters instead
+ * of one blob — the failure mode where every page title is "幻灯片 3: 10.1 …".
+ */
+function chaptersFromSectionNumbers(doc) {
+  const pages = doc.pages || []
+  const entries = pages.map((p) => {
+    const head = String(p.text || '').split('\n').slice(0, 6)
+    const title = norm(p.title || '')
+    let major = null
+    let label = ''
+    for (const line of [title, ...head]) {
+      const trimmed = String(line || '').trim()
+      // a section heading is short: body text like "61.4" must not create chapters
+      if (!trimmed || trimmed.length > 40) continue
+      const m = /^\s*(?:幻灯片\s*\d+\s*[:：]?\s*)?(\d{1,2})[.．](\d{1,2})\s*[、.．:：]?\s*(.*)$/.exec(trimmed)
+      if (!m) continue
+      const num = Number(m[1])
+      if (num < 1 || num > 30 || Number(m[2]) > 30) continue
+      const labelText = norm(m[3] || '')
+      // a real heading carries words; "3 × 1 5 + 2.56" is body arithmetic
+      if (labelText.replace(/[^\u4e00-\u9fff]/g, '').length < 2) continue
+      major = num
+      label = labelText.slice(0, 30)
+      break
+    }
+    return { page: p, major, label }
+  })
+  const numbered = entries.filter((e) => e.major !== null)
+  const majors = [...new Set(numbered.map((e) => e.major))]
+  if (numbered.length < 3 || majors.length < 2) return null
+
+  const groups = []
+  let current = null
+  for (const e of entries) {
+    if (e.major === null) {
+      if (current) current.pages.push(e.page)
+      continue
+    }
+    if (!current || current.major !== e.major) {
+      current = { major: e.major, label: e.label, pages: [e.page] }
+      groups.push(current)
+    } else {
+      current.pages.push(e.page)
+      if (!current.label && e.label) current.label = e.label
+    }
+  }
+  return groups
+    .filter((g) => g.pages.length)
+    .map((g, i) => ({
+      index: i + 1,
+      title: g.label ? `第 ${g.major} 章 ${g.label}` : `第 ${g.major} 章`,
+      pages: g.pages.map((p) => p.index),
+      subs: g.pages.map((p) => p.title).filter(Boolean),
+      text: g.pages.map((p) => p.text).join('\n\n'),
+      source: 'numbering',
+    }))
+}
+
+function chapterTitleFor(pages, i) {  const t = norm(pages[0]?.title)
   if (t && t.length <= 40) return t
   return `第 ${i + 1} 部分`
 }
@@ -298,8 +397,35 @@ export function buildOutline(docs) {
   const all = []
   for (const doc of docs) {
     let chapters = null
-    if (doc.outline?.length) chapters = chaptersFromPdfOutline(doc)
+    // Sparse slide decks: bundle by text volume and trust the first line of each
+    // page. Bookmarks on such files are per-slide noise that collapses to 1–2
+    // chapters, and text-pattern splitting finds no headings at all.
+    const pages = doc.pages || []
+    const totalChars = pages.reduce((n, p) => n + (p.text || '').length, 0)
+    const slideLike = pages.length >= 8 && totalChars / pages.length < 260
+    if (slideLike) {
+      const byNumber = chaptersFromSectionNumbers(doc)
+      chapters = byNumber?.length >= 2 ? byNumber : chaptersByChars(doc)
+    }
+    if (!chapters && doc.outline?.length) {
+      // A deck can carry one or two bookmarks for dozens of pages; trusting that
+      // collapses the outline, so short bookmark lists only win on short files.
+      const fromMarks = chaptersFromPdfOutline(doc)
+      if (fromMarks.length >= 3 || pages.length < 12) chapters = fromMarks
+    }
     if (!chapters && doc.blocks?.length) chapters = chaptersFromBlocks(doc)
+    if (!chapters && doc.pages?.length) {
+      // Slide decks exported to PDF: page titles are mixed strings like
+      // "幻灯片 3: 10.1 异常处理". Group pages by the section number instead of
+      // falling back to fixed 5-page chunks, which collapses a 54-page deck into
+      // one chapter.
+      const byNumber = chaptersFromSectionNumbers(doc)
+      if (byNumber?.length >= 2) chapters = byNumber
+      if (!chapters) {
+        const byChars = chaptersByChars(doc)
+        if (byChars?.length >= 2) chapters = byChars
+      }
+    }
     if (!chapters && doc.pages?.length) {
       // OCR pages carry a real first-line title, so page grouping beats text
       // patterns (OCR text has no reliable heading markers)

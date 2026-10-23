@@ -96,7 +96,51 @@ export function apply(ctx, config = {}) {
     return { provider, model, stream: (options) => svc.stream(options) }
   }
 
+  /**
+   * .ppt/.doc are OLE compound files our parser does not read. The profile's
+   * officeToPdf service converts them to PDF, which we already parse — cheaper
+   * and more faithful than writing two more binary parsers.
+   */
+  const LEGACY_EXT = new Set(['ppt', 'doc', 'xls'])
+
+  async function prepareInputs(inputs) {
+    const office = ctx.get('officeToPdf')
+    if (!office?.convert) return inputs
+    const prepared = []
+    for (const input of inputs) {
+      const ext = String(input.name || input.path).split('.').pop().toLowerCase()
+      if (!LEGACY_EXT.has(ext)) {
+        prepared.push(input)
+        continue
+      }
+      try {
+        const bytes = readFileSync(input.path)
+        const result = await office.convert({
+          extension: ext,
+          priority: 'foreground',
+          source: {
+            key: `course-assistant:${basename(input.path)}:${bytes.length}`,
+            version: String(bytes.length),
+            bytes: bytes.length,
+            read: async () => ({ bytes, version: String(bytes.length) }),
+          },
+        })
+        const target = join(store.uploadsDir, `${randomUUID().slice(0, 8)}-${basename(input.name).replace(/\.[^.]+$/, '')}.pdf`)
+        store.writeBytes(target, Buffer.from(result.pdf))
+        // keep the original display name: the report should say "x.ppt", not "x.pdf"
+        prepared.push({ ...input, path: target, convertedFrom: ext })
+        ctx.logger?.info?.(`converted ${input.name} (.${ext}) to PDF for parsing`)
+      } catch (error) {
+        ctx.logger?.warn?.(`legacy conversion failed for ${input.name}: ${error.message}`)
+        prepared.push({ ...input, convertError: error.message })
+      }
+    }
+    return prepared
+  }
+
   async function makeJob(inputs, options) {
+    const prepared = await prepareInputs(inputs)
+    inputs = prepared
     const id = randomUUID().slice(0, 8)
     const job = {
       id,
@@ -173,7 +217,7 @@ export function apply(ctx, config = {}) {
           pdf: !!ctx.get('officeToPdf')?.convert,
           ocr: ocrAvailable(),
           dataDir: store.dataDir,
-          supported: SUPPORTED,
+          supported: [...SUPPORTED, '.ppt', '.doc', '.xls'],
           jobs: jobs.size,
         })
       }
@@ -182,7 +226,8 @@ export function apply(ctx, config = {}) {
         const rawName = url.searchParams.get('name') || 'file'
         const name = basename(decodeURIComponent(rawName))
         const ext = name.slice(name.lastIndexOf('.')).toLowerCase()
-        if (!SUPPORTED.includes(ext)) {
+        // legacy Office files are accepted and converted to PDF before parsing
+        if (!SUPPORTED.includes(ext) && !LEGACY_EXT.has(ext.slice(1))) {
           return send(res, 400, { ok: false, reason: `不支持的文件类型：${ext || '(无扩展名)'}` })
         }
         const body = await readBody(req)
