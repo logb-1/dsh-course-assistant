@@ -123,3 +123,89 @@ node <pnpm> pack --pack-destination ..   # 确认 core/ocr.ps1 在内
 - **`pnpm exec` 会被 pnpm 自己的 module hook 干扰**，跑 playwright 直接用 `node node_modules/@playwright/test/cli.js`。
 - **GUI 需要 `dsh web` 启动时打印的带 token 地址**：直接 `page.goto('/')` 会拿到 401 纯文本
   「dsh web authentication required」，spec 里要带 `?token=`（或让用户从地址栏复制整条 URL）。
+
+## 十、2026-10-23 晚：审阅意见落地（**进行中，wip 分支**）
+
+需求来源是桌面两份文件，后续一切以它们为准：
+`C:\Users\ThinkPad\Desktop\课程助手_改进计划_v1.txt` 和 `课程助手_审阅意见_v1.txt`。
+
+### 状态（务必先看）
+
+| 项 | 值 |
+|---|---|
+| `main` | 203850d，1.3.0，`regress` **13/13**，插件当前跑的就是它（稳定） |
+| `wip/review-v1` | 1d36142，已推 origin，`regress` **13/13**，含阶段 0 + 1 主体 + 阶段 4 的数据层 |
+| 是否可以合 main | **还不可以**：index.js 的接线没做完（见下），合过去只是半成品 |
+
+切分支：`git checkout wip/review-v1`；回稳定：`git checkout main`。
+
+### 已完成（在 wip 分支）
+
+1. **B1 缓存引用污染**：写缓存前 `structuredClone`，读缓存后也 clone，缓存里只存模型原始输出。
+2. **B2 OCR 重放**：`prepareDocs()` 抽成共用（twins 去重 + OCR），OCR 结果按
+   `sha256 + 引擎 + 页数` 缓存到 `<dataDir>/ocr/<hash>.json`，重跑命中缓存不再跑 OCR。
+3. **B3 重跑可信度**：新增 `applyAssessment()`，首跑与重跑共用；它同时写
+   `chapter.summary / status / confidence`（**之前漏了前两个，导致章节 summary 为 null，
+   回归里表现为「重跑总有差异」**）。
+4. **证据机检**：`core/verify.js` 重写
+   - `THRESHOLDS` 单一常量：overlap 0.55/0.3、faithfulness 0.8/0.6、evidenceMinChars 10、fuzzy 0.85、link 0.2
+   - `supportScore` 空文本返回 **null**（原来返回 1，等于「没有原文反而满分」）
+   - `matchEvidence` → `exact / fuzzy(4-gram 覆盖≥0.85) / short / missing`
+   - `evaluateSummary` → `{tier, reasons, overlap, faithfulness, evidence, points}`
+   - `describeConfidence` 只陈述测量值，**不再出现"编造/推断"**；`report.js` 的
+     `legacyConfidence()` 兼容老 job
+5. **prompt v4**：`key_points` 改成 `[{text, evidence}]`，删掉 `unsupported_idx`
+   （解析器仍兼容老格式）；`localSummary` 也带 evidence（原文行本身）；
+   `CHAPTER_PROMPT_VERSION` 3→4；缓存键改成 `sum:v4:<hash>:<provider/model>:<domainId>`。
+6. **store**：`ocrDir / readOcr / writeOcr`；`uploads/index.json`（`findUpload` / `touchUploads`）；
+   `pruneUploads` 改按 `lastUsedAt` 而不是文件 mtime。
+7. **manifest**：`job.inputs`（相对路径 + sha256 + uploadId）、`job.outline`
+   （boundaries + hash）、`job.schemaVersion = 2`、`job.ocr`。
+8. **客户端**：`key_points` 对象渲染、置信度按 tier 着色（ok/warn/err）。
+
+### 未接线（下一步第一件事）
+
+`index.js` 只加了常量（`HERE` / `PKG` / `hostname` / `isAbsolute` / `BOOT_ID` /
+`HEARTBEAT_MS` / `STALE_MS`），以下**都还没实现**：
+
+- 心跳：每 15s 写 `job.heartbeatAt` + `job.owner{pid,hostname,bootId}`（`timer.unref()`）
+- 启动僵尸扫描：`running` 且心跳 > 90s 且同主机 pid 不存在 → 标 `interrupted`
+- `/rerun` 从 `job.inputs` 恢复输入（相对路径拼 `dataDir`；缺失返回 **410** 并带文件名）
+- `health.version` 改成读 `PKG.version`（不再写死）
+- run / rerun 时调 `store.touchUploads(inputs.map(i => i.uploadId))`
+- `/run` 构造 inputs 时补 `uploadId`
+
+### 下一步（按审阅意见顺序）
+
+```
+0  接线 index.js（上面 6 条）           → 阶段 4 收尾
+5a regress 拆 unit/real + --strict
+1  同名章节合并：2.1 只在标题变化时开新章；2.2 加前缀前按文件合并；2.8 附页码区间
+3  Config（schemastery，11 字段）+ 设置页 + 现有 patch 必须通过校验
+G  gold 集 + NLTK windowdiff 的页级改造
+2  PDF 字号（Tm×CTM 聚类，BaseFont 字重）+ PPTX p14:sectionLst / sldLayout secHead
+5b CI（win+ubuntu 矩阵、pack 清单、stub 契约）+ nightly aria（Windows 计划任务，不走 self-hosted）
+8  §8.1 长章节抽取式预选（当前只发前 80%+后 18%，14000 字的章约 75% 模型看不到）
+9  §9 功能（页码回链、考纲覆盖、BM25 问答、分 P、Anki、course.json）
+```
+
+### 调研结论（省得重新查）
+
+- **PPTX 节**：`p:ext uri="{521415D9-36F7-43E2-AB2F-B90AF26B5E84}"` 下的
+  `p14:sectionLst > p14:section name= > p14:sldIdLst > p14:sldId id=`，
+  **id 是 slide id，要 join `p:sldIdLst` 的顺序**（MS-PPTX 3.3 示例里 id 是非单调的）
+- **分章评估**：TextTiling（Hearst 1997）+ `nltk.metrics.windowdiff`
+- **字号**：pdf.js / pdfplumber 都从文本矩阵推有效字号；**Tz 只影响宽度，不要乘进字号**
+- **Zombie**：BullMQ 的 stalled-job 锁续约；**不要用 bootId**（多实例互判死）
+- **缓存/GC**：npm/cacache（内容寻址）、bazel-remote
+- **长文**：Lost in the Middle（2307.03172）+ TextRank（W04-3252）
+- **BM25**：minisearch（零依赖 JS）；中文分词用 Node 内置 `Intl.Segmenter`
+- **B 站分 P**：`/x/web-interface/view` 的 `data.pages[].part`，参考
+  `SocialSisterYi/bilibili-API-collect`
+
+### 本轮踩坑
+
+- **ESM 调试脚本必须放仓库目录内**：放 `%TEMP%` 里相对 import 会 `ERR_MODULE_NOT_FOUND`。
+- **`git checkout` 在 pwsh 里 exit code 1 是假报警**：git 把 `Switched to...` 写到 stderr，
+  PowerShell 当成错误流，命令本身是成功的。
+- **桌面 .txt 用 CRLF + UTF-8 无 BOM** 写，记事本才不会一行到底。
