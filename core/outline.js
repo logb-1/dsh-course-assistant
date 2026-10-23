@@ -8,6 +8,7 @@
  * The model is never asked to find the structure — only to summarize text we
  * already grouped locally.
  */
+import { cleanTerm, isGeneric, tfidfTerms } from './terms.js'
 
 const CHAPTER_RE = /^(?:第\s*[一二三四五六七八九十百\d]+\s*[章节讲部]|chapter\s*\d+|part\s*[一二三四五六七八九十\d]+)/i
 const SECTION_MARK_RE = /^§\s*(\d{1,2})\s*[·:：\-–—]\s*(.+)$/
@@ -516,6 +517,32 @@ function mergeSmall(chapters) {
 }
 
 /**
+ * A chapter named after a page header ("主要内容") is useless in the table of
+ * contents and poisonous as a search query. Fall back to the first informative
+ * sub-heading, then the first line, then TF-IDF terms from the chapter itself.
+ */
+function informativeTitle(chapter, index) {
+  const raw = String(chapter.title || '')
+  // the page-range suffix tells two same-named chapters apart; only the
+  // generic-title test looks past it
+  const base = raw.replace(/（p\d+[–-]\d+）\s*$/, '').replace(/（\d+）\s*$/, '').trim()
+  const title = cleanChapterTitle(raw) || raw
+  // "第 1 章 甲" is a legitimate title; only drop genuinely empty phrases
+  if (base && !isGeneric(base)) return title
+  for (const sub of chapter.subs || []) {
+    const term = cleanChapterTitle(sub) || sub
+    if (term && !isGeneric(term) && term.length <= 40) return term
+  }
+  for (const line of String(chapter.text || '').split('\n')) {
+    const term = cleanTerm(line)
+    if (term && term.length <= 40) return term
+  }
+  const terms = tfidfTerms([chapter.text || ''], { topK: 2 })
+  if (terms.length) return terms.join(' ')
+  return `第 ${index + 1} 部分`
+}
+
+/**
  * @param docs parsed documents (each { kind, title, pages, blocks, outline? })
  * @returns {{ courseTitle: string, chapters: Array, tree: Array }}
  */
@@ -586,9 +613,9 @@ export function buildOutline(docs) {
     chapters: chapters.map((c, i) => ({
       ...c,
       index: i + 1,
-      title: cleanChapterTitle(c.title) || `第 ${i + 1} 部分`,
+      title: informativeTitle(c, i),
     })),
-    tree: buildTree(chapters.map((c) => ({ ...c, title: cleanChapterTitle(c.title) }))),
+    tree: buildTree(chapters.map((c, i) => ({ ...c, title: informativeTitle(c, i) }))),
   }
 }
 

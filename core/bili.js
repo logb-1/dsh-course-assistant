@@ -9,6 +9,8 @@
  */
 import { createHash } from 'node:crypto'
 import { anchorQuery, conflictsDomain, mentionsDomain } from './domain.js'
+import { cleanKeywords, cleanTerm } from './terms.js'
+import { judgeVideo, matchTopic } from './topic.js'
 
 const MIXIN_TAB = [
   46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9,
@@ -154,6 +156,52 @@ function scoreItem(item, keywords) {
 /**
  * @param {{ cache: {get,set}, log?: (msg:string)=>void, spacingMs?: number }} deps
  */
+/**
+ * Topic-aware rank: a candidate must belong to the course (anchor or ≥2 vocab
+ * words), to the chapter (≥1 concept) and must not name an off-topic subject.
+ * Relevance comes first; popularity can no longer carry an unrelated video.
+ */
+export function rankWithTopic(items, { topic, concepts, domain = null, minDuration = MIN_DURATION_SEC } = {}) {
+    const seen = new Set()
+    const out = []
+    for (const item of items || []) {
+      if (!item?.bvid || seen.has(item.bvid)) continue
+      seen.add(item.bvid)
+      if (item.duration && item.duration < minDuration) continue
+      const hay = `${stripTags(item.title)} ${item.description || ''} ${item.tag || ''}`
+      if (conflictsDomain(hay, domain)) continue
+      if (!topic) {
+        // no profile: keep the old lenient behaviour
+        const score = scoreItem(item, concepts)
+        if (score > 0) out.push({ ...item, score: Number(score.toFixed(3)), series: SERIES_HINT.test(item.title) })
+        continue
+      }
+      const verdict = judgeVideo(hay, topic, concepts)
+      if (!verdict.ok) continue
+      const anchor = verdict.anchor ? 0.5 : 0
+      const vocab = Math.min(0.3, verdict.vocabHits.length * 0.1)
+      const concept = Math.min(0.2, verdict.concepts.length * 0.2)
+      const relevance = Math.min(1, Math.round((anchor + vocab + concept) * 100) / 100)
+      const play = Number(item.play) || 0
+      const like = Number(item.like) || 0
+      const fav = Number(item.favorites) || 0
+      const playPart = Math.min(1, Math.log10(play + 1) / 7)
+      const favPart = like > 0 ? Math.min(1, fav / like) : 0
+      const series = SERIES_HINT.test(item.title) ? 1 : 0
+      const heat = 0.5 * playPart + 0.5 * favPart
+      const score = relevance >= 0.5 ? 0.75 * relevance + 0.15 * heat + 0.1 * series : 0
+      if (score <= 0) continue
+      out.push({
+        ...item,
+        score: Number(Math.min(1, score).toFixed(3)),
+        relevance,
+        matchedConcepts: verdict.concepts,
+        series: !!series,
+      })
+    }
+    return out.sort((a, b) => b.score - a.score)
+  }
+
 export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
   let keys = null
   let lastRequest = 0
@@ -320,9 +368,10 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
    * @param {{limit?:number, extraQueries?:string[]}} [opts] extraQueries come from
    *        the chapter keywords, which are only known after summarization.
    */
-  async function recommendSeries(courseTitle, { limit = 3, extraQueries = [], domain = null } = {}) {
+  async function recommendSeries(courseTitle, { limit = 3, extraQueries = [], domain = null, topic = null } = {}) {
     const base = cleanTitle(courseTitle)
-    const anchored = domain ? anchorQuery(base, domain) : base
+    const anchor = topic?.anchor && cleanTerm(topic.anchor)
+    const anchored = anchor && !String(base).includes(anchor) ? `${anchor} ${base}` : base
     const queries = [
       ...new Set([
         `${anchored} 合集`,
@@ -330,7 +379,7 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
         `${anchored} 全套`,
       ].filter(Boolean)),
     ].slice(0, 4)
-    const keywords = tokens(`${base} ${domain ? domain.name : ''} ${extraQueries.join(' ')}`).slice(0, 14)
+    const keywords = tokens(`${base} ${anchor || ''} ${domain ? domain.name : ''} ${extraQueries.join(' ')}`).slice(0, 14)
     const pool = []
     let ok = false
     let reason = ''
@@ -342,7 +391,13 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
     }
     const ranked = rank(pool, keywords, { minDuration: 600, domain })
     // a series must be an actual collection *and* on topic; near-hits stay out
-    const series = ranked.filter((it) => (it.series && it.score >= 0.3) || it.score >= 0.52).slice(0, limit)
+    const onTopic = ranked.filter((it) => {
+      if (!topic) return true
+      const hay = `${stripTags(it.title)} ${it.description || ''} ${it.tag || ''}`
+      const { anchor: hitAnchor, vocabHits, negative } = matchTopic(hay, topic)
+      return !negative && (hitAnchor || vocabHits.length >= 2)
+    })
+    const series = onTopic.filter((it) => (it.series && it.score >= 0.3) || it.score >= 0.52).slice(0, limit)
     const links = [...new Set([...queries, base])].slice(0, 3).map((q) => ({ label: q, url: searchLink(q) }))
     return { ok, fallback: !ok, reason, series, queries, links }
   }
@@ -400,43 +455,102 @@ export function createBiliClient({ cache, log = () => {}, spacingMs = 1000 }) {
     }
   }
 
-  async function recommendChapter(keywords, { limit = 3, domain = null, chapterTitle = '' } = {}) {
-    // three complementary queries: the chapter's own title, the model keywords,
-    // and a domain-generic one; RRF keeps whatever is consistently relevant
-    const queries = [
-      ...new Set(
-        [
-          chapterTitle ? cleanTitle(chapterTitle) : '',
-          ...keywords.map((key) => anchorQuery(key, domain)),
-          domain ? `${domain.name} 教程` : '',
-        ].filter(Boolean),
-      ),
-    ].slice(0, 3)
-    const lists = []
+  /**
+   * Anchored search, widening only when a level cannot fill the quota:
+   *   L1 anchor + concept   L2 concepts   L3 course topic   L4 give up (links)
+   */
+  async function recommendChapter(keywords, { limit = 3, domain = null, chapterTitle = '', topic = null } = {}) {
+    const anchor = topic?.anchor || ''
+    // keywords are phrases like "计算机系统 数据表示"; matching and searching need
+    // the individual terms, and the anchor must not be repeated inside them
+    const terms = (keywords || [])
+      .flatMap((keyword) => String(keyword).split(/[\s,，、/|]+/))
+      .map((term) => cleanTerm(term))
+      .filter((term) => term && term !== anchor && !(anchor && term.startsWith(anchor)))
+    const titleTerm = cleanTerm(chapterTitle)
+    // shortest keyword first: 「补码」 narrows the search better than a long
+    // phrase; the chapter title only ever comes last (it is the weakest signal)
+    const ordered = [...new Set(terms)].sort((a, b) => a.length - b.length)
+    if (titleTerm && !ordered.includes(titleTerm)) ordered.push(titleTerm)
+    const concepts = ordered.slice(0, 3)
+    const courseTopic = cleanTerm(topic?.courseTitle || '')
+    const ladder = [
+      // never repeat the anchor: "计算机系统 计算机系统 数据表示" searches badly
+      anchor && concepts[0] ? (concepts[0].startsWith(anchor) ? concepts[0] : `${anchor} ${concepts[0]}`) : concepts[0] || '',
+      concepts.slice(0, 2).join(' '),
+      courseTopic,
+    ].filter((query) => query && query.length >= 2 && cleanTerm(query))
+    const levels = [...new Set(ladder)]
+
+    const collected = []
+    const queries = []
     let ok = false
     let reason = ''
-    for (const query of queries) {
+    let filteredOut = 0
+
+    for (let i = 0; i < levels.length; i += 1) {
+      const query = levels[i]
+      queries.push(query)
       const res = await search(query, 20)
-      if (res.ok) ok = true
-      else reason = res.reason
-      lists.push(res.items)
+      if (!res.ok) {
+        reason = res.reason
+        continue
+      }
+      ok = true
+      const ranked = rankWithTopic(res.items, { topic, concepts, domain })
+      filteredOut += Math.max(0, (res.items?.length || 0) - ranked.length)
+      collected.push(...ranked)
+      if (ranked.length >= 2) {
+        const unique = dedupeVideos(collected)
+        const top = await enrich(unique.slice(0, limit), [chapterTitle, ...concepts])
+        return { ok, fallback: false, reason: '', queries, videos: top, level: i + 1, filteredOut }
+      }
     }
-    const kw = tokens(`${queries.join(' ')} ${domain ? domain.name : ''}`)
-    const ranked = rank(fuse(lists), kw, { domain }).filter((v) => v.score >= 0.28)
-    // fused evidence is worth a nudge, but never enough to rescue a bad match
-    for (const video of ranked) video.score = Number(Math.min(1, video.score + (video.rrf || 0) * 2).toFixed(3))
-    ranked.sort((a, b) => b.score - a.score)
-    const top = ranked.slice(0, limit)
-    // enrich only the first two hits: each one costs a request
-    for (const video of top.slice(0, 2)) {
+
+    const unique = dedupeVideos(collected)
+    if (unique.length) {
+      const top = await enrich(unique.slice(0, limit), [chapterTitle, ...concepts])
+      return { ok, fallback: false, reason: '', queries, videos: top, level: levels.length || 4, filteredOut }
+    }
+    // L4: no on-topic video. A search link is better than an off-topic pick.
+    return {
+      ok,
+      fallback: true,
+      reason: ok ? '主题过滤后没有对题的网课' : reason || 'B 站检索失败',
+      queries,
+      videos: [],
+      level: 4,
+      filteredOut,
+    }
+  }
+
+  function dedupeVideos(list) {
+    const seen = new Set()
+    const out = []
+    for (const video of list) {
+      if (!video?.bvid || seen.has(video.bvid)) continue
+      seen.add(video.bvid)
+      const previous = out.find((v) => v.bvid === video.bvid)
+      if (previous) {
+        if (video.score > previous.score) Object.assign(previous, video)
+        continue
+      }
+      out.push(video)
+    }
+    return out.sort((a, b) => b.score - a.score)
+  }
+
+  /** Add multi-part info for the first two hits (one extra request each). */
+  async function enrich(videos, needles) {
+    for (const video of videos.slice(0, 2)) {
       const pages = await videoParts(video.bvid)
       if (pages.length > 1) {
         video.partCount = pages.length
-        const match = bestPart(pages, [chapterTitle, ...keywords])
+        const match = bestPart(pages, needles)
         if (match) video.bestPart = match
       }
     }
-    return { ok, fallback: !ok, reason, queries, videos: top }
+    return videos
   }
 
   return {

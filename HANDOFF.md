@@ -269,3 +269,21 @@ node tools/client-contract.mjs             # client 槽位契约
 node tools/nightly-visual.mjs              # 真面板（需 web-token.txt）
 # 改代码后重载：plugin_manager remove_bundle → install_bundle（同一绝对路径）
 ```
+
+## 十二、2026-10-23 晚 · 1.5.0 B 站推荐防跑题
+
+需求来源：桌面《课程助手_B站推荐改良方案_v1.txt》。新增 `core/terms.js`、`core/topic.js`，
+改动 `core/bili.js`（分层搜索 + 主题过滤 + 两段式排序）、`core/pipeline.js`（总结后建主题档案再检索）、
+`core/summarize.js`（空回包重试加大 maxTokens）、`core/outline.js`（通用章名替换）。
+
+**验收（同一份课件实测）**：跑题词命中 **0**；第 3 章从「中职英语/ESP32/阅读理解」变为
+「深入理解计算机系统[00] 无符号整数、二进制补码」；4/5 章有对题视频（「码点空间」这类冷门词按设计给搜索链接）；
+第 1、5 章的「主要内容」章名已替换。
+
+**回归**：`--unit` **19 项**、`--real` 9 项，全绿。新增断言：编号剥离/通用词丢弃、
+锚词投票、三个跑题视频全淘汰且对题视频保留、相关度 <0.5 不计分。
+
+**仍可改进**：`vocab` 里仍有「表示/存储/数据」这类宽泛词；`码点空间` 这类术语 B 站覆盖差，
+需要更宽松的 L2.5（同义词/上位词）才能填补。
+
+**发布**：1.5.0 已发 npm，tag `v1.5.0`。

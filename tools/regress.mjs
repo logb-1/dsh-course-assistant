@@ -30,7 +30,9 @@ import { __debug as ooxmlDebug } from '../core/ooxml.js'
 import { boundaryF1, evaluateDoc, windowDiff } from './segment-metrics.mjs'
 import { ask, buildIndex, indexFromPassages, search, serializePassages } from '../core/search.js'
 import { coverage, parseSyllabus } from '../core/coverage.js'
-import { bestPart } from '../core/bili.js'
+import { bestPart, rankWithTopic } from '../core/bili.js'
+import { cleanKeywords, cleanTerm } from '../core/terms.js'
+import { buildTopicProfile } from '../core/topic.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
 
@@ -427,6 +429,62 @@ check('B 站分 P：标题匹配到具体 P，无关分 P 不误配', () => {
   assert(bestPart([{ page: 1, part: '线性代数' }, { page: 2, part: '概率论' }], ['异常与断言']) === null, '无关分 P 不应匹配')
   assert(bestPart([{ page: 1, part: '单 P 视频' }], ['异常']) === null, '单 P 视频不应给分 P 推荐')
   return `第 ${hit.page}P · ${hit.score}`
+})
+
+check('通用词：编号剥离、通用词丢弃、TF-IDF 兜底', () => {
+  assert(cleanTerm('四、编码方案') === '编码方案', `编号未剥离：${cleanTerm('四、编码方案')}`)
+  assert(cleanTerm('主要内容') === '', '「主要内容」应被丢弃')
+  assert(cleanTerm('3. 码点空间') === '码点空间', `英文编号未剥离：${cleanTerm('3. 码点空间')}`)
+  assert(cleanKeywords(['主要内容', '本章小结', '四、编码方案'], 4).join('|') === '编码方案', '关键词清洗失败')
+  // 通用章名必须被替换掉，不能进目录
+  const pages = Array.from({ length: 10 }, (_, i) => ({
+    index: i + 1,
+    title: '主要内容',
+    text: `第${i + 1}页 补码 原码 无符号整数 的表示范围与运算`,
+  }))
+  const outline = buildOutline([{ kind: 'pptx', title: '数据的机器级表示和处理', pages, blocks: [] }])
+  assert(outline.chapters.every((c) => c.title !== '主要内容'), `仍有通用章名：${outline.chapters.map((c) => c.title).join(' | ')}`)
+  return `${outline.chapters.length} 章均已改名`
+})
+
+check('主题锚词：关键词前缀投票，否则退回课程标题', () => {
+  const voted = buildTopicProfile({
+    courseTitle: '数据的机器级表示和处理',
+    keywords: ['计算机系统 补码', '计算机系统 浮点数', '计算机系统 字符编码'],
+    texts: ['补码与原码的区别，浮点数按 IEEE754 存储。'],
+    domain: null,
+  })
+  assert(voted.anchor === '计算机系统', `锚词应为 计算机系统，实际 ${voted.anchor}`)
+  const titled = buildTopicProfile({ courseTitle: '微观经济学', keywords: ['弹性', '供给'], texts: ['需求价格弹性。'], domain: null })
+  assert(titled.anchor === '微观经济学', `无投票时应退回课程标题，实际 ${titled.anchor}`)
+  return `${voted.anchor} / ${titled.anchor}`
+})
+
+check('B 站主题过滤：跑题视频全淘汰，对题视频保留', () => {
+  const profile = buildTopicProfile({
+    courseTitle: '数据的机器级表示和处理',
+    keywords: ['计算机系统 补码', '计算机系统 浮点数', '计算机系统 字符编码'],
+    texts: [
+      '补码表示法把减法变成加法，补码与原码、反码的区别在于符号位参与运算。',
+      '浮点数按 IEEE754 标准存储，阶码用移码表示，尾数决定精度。',
+      '字符编码包括 ASCII 与 Unicode，UTF-8 是变长编码。',
+    ],
+    domain: null,
+  })
+  const items = [
+    { bvid: 'BV1', title: '中职英语基础模块一（1-8单元语法汇总和每章主要内容总结）', duration: 1800, play: 500000, like: 1000, favorites: 500 },
+    { bvid: 'BV2', title: '【ESP32教程】第二章: 低功耗蓝牙BLE相关概念及用法', duration: 1200, play: 90000, like: 300, favorites: 200 },
+    { bvid: 'BV3', title: '阅读理解 概括文章主要内容答题框架＋练习', duration: 900, play: 300000, like: 800, favorites: 400 },
+    { bvid: 'BV4', title: '计算机系统 补码与原码 数据表示（袁春风）', duration: 2400, play: 50000, like: 900, favorites: 800 },
+  ]
+  const ranked = rankWithTopic(items, { topic: profile, concepts: ['补码', '编码'], minDuration: 0 })
+  const ids = ranked.map((v) => v.bvid)
+  for (const bad of ['BV1', 'BV2', 'BV3']) assert(!ids.includes(bad), `${bad} 应被淘汰，实际保留：${ids.join(',')}`)
+  assert(ids.includes('BV4'), `对题视频被误杀：${ids.join(',')}`)
+  const kept = ranked.find((v) => v.bvid === 'BV4')
+  assert(kept.relevance >= 0.5, `相关度 ${kept.relevance} 低于 0.5`)
+  assert(ranked.every((v) => v.relevance >= 0.5), '低于 0.5 的视频不应进入结果')
+  return `保留 ${ids.join(',')}，相关度 ${kept.relevance}`
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

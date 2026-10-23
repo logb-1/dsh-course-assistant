@@ -231,7 +231,7 @@ export function truncate(text, max = MAX_CHAPTER_CHARS) {
   return selectPassages(text, max)
 }
 
-export async function summarizeChapter({ llm, provider, model, courseTitle, chapter, text, outline, domain, signal }) {
+export async function summarizeChapter({ llm, provider, model, courseTitle, chapter, text, outline, domain, signal, maxTokens }) {
   // `chapter` is metadata only: the body must be passed explicitly, otherwise the
   // model summarises a title and every evidence quote fails to match.
   const source = String(text ?? chapter.text ?? '')
@@ -263,7 +263,9 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
       model,
       system: SYSTEM,
       messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-      maxTokens: 2600,
+      // a retry raises this: reasoning models sometimes spend the whole budget
+      // and return no text at all
+      maxTokens: Number(maxTokens) || 2600,
       temperature: 0.2,
       signal,
     }),

@@ -20,6 +20,8 @@ import { ocrPdf, ocrStatus } from './ocr.js'
 import { detectDomain } from './domain.js'
 import { evaluateSummary, describeConfidence, pointText, pointEvidence, normalizeForMatch } from './verify.js'
 import { buildIndex, serializePassages } from './search.js'
+import { buildTopicProfile } from './topic.js'
+import { cleanKeywords, topTermsFor } from './terms.js'
 
 /** Content-addressed OCR cache: reruns reuse the first run's pages byte-for-byte. */
 export function ocrCachePath(store, pdfPath, options = {}) {
@@ -102,7 +104,9 @@ async function summarizeWithRetry(args, attempts = 2) {
   let last = null
   for (let i = 0; i < attempts; i += 1) {
     try {
-      return await summarizeChapter(args)
+      // the second attempt gets a larger budget: an empty reply usually means the
+      // reasoning trace ate maxTokens
+      return await summarizeChapter(i === 0 ? args : { ...args, maxTokens: 3600 })
     } catch (error) {
       last = error
       if (i + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 400 * (i + 1)))
@@ -351,14 +355,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   const outlineTitles = chapters.map((c) => c.title)
   if (!useModel) warnings.push('未找到可用模型，改用本地兜底摘要')
 
-  /* ---------------- 3. search + summarize in parallel ---------------- */
-  const chapterQueries = chapters.length > 12 ? 1 : 2
-  const seriesPromise =
-    options?.withVideos === false
-      ? Promise.resolve({ ok: true, series: [], fallback: false })
-      : bili
-          .recommendSeries(outline.courseTitle, { domain })
-          .catch((e) => ({ ok: false, series: [], fallback: true, reason: e.message }))
+  /* ---------------- 3. summarize (search runs after, once the topic is known) ---------------- */
 
   let doneCount = 0
   const telemetry = { chapters: chapters.length, modelCalls: 0, cacheHits: 0, sourceChars: 0, keptChars: 0 }
@@ -407,56 +404,37 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       doneCount += 1
       push({
         message: `总结第 ${chapter.index}/${chapters.length} 章：${chapter.title.slice(0, 24)}`,
-        progress: 0.18 + 0.62 * (doneCount / chapters.length),
+        progress: 0.18 + 0.55 * (doneCount / chapters.length),
       })
-
-      if (options?.withVideos !== false) {
-        try {
-          const keywords = (summary.keywords || []).slice(0, chapterQueries)
-          const res = await bili.recommendChapter(keywords.length ? keywords : [chapter.title], {
-            domain,
-            chapterTitle: chapter.title,
-          })
-          job.byChapter[chapter.index] = {
-            videos: res.videos.map((v) => ({
-              bvid: v.bvid,
-              title: v.title,
-              author: v.author,
-              play: v.play,
-              duration: v.duration,
-              score: v.score,
-              url: v.url,
-              series: v.series,
-              parts: v.partCount || 0,
-              bestPart: v.bestPart || null,
-            })),
-            queries: res.queries,
-            ok: res.ok,
-            fallback: res.fallback,
-            reason: res.reason || '',
-          }
-          if (res.fallback && !job.fallback) {
-            job.fallback = true
-            warnings.push(`B 站检索受限：${res.reason || '风控'}，附录改用搜索链接`)
-          }
-        } catch (error) {
-          warnings.push(`第 ${chapter.index} 章检索失败：${error.message}`)
-        }
-        push({})
-      }
     },
   )
 
-  const seriesResult = await seriesPromise
-  let series = seriesResult.series || []
-  let seriesLinks = seriesResult.links || []
-  if (options?.withVideos !== false) {
-    if (seriesResult.fallback) {
-      job.fallback = true
-      if (seriesResult.reason) warnings.push(`系列课检索受限：${seriesResult.reason}`)
+  /* ---------------- 3.5 topic profile + Bilibili search ---------------- */
+  // generic page headers ("主要内容") must never become search words
+  for (let i = 0; i < chapters.length; i += 1) {
+    const chapter = chapters[i]
+    const cleaned = cleanKeywords(chapter.summary?.keywords || [], 4)
+    if (cleaned.length) {
+      chapter.summary.keywords = cleaned
+    } else {
+      const terms = topTermsFor(texts[i] || '', texts, 3)
+      chapter.summary.keywords = terms.length ? terms : cleaned
     }
-    // Refine the course-level search with the vocabulary that only exists once
-    // every chapter has keywords (e.g. 「国际贸易 政策评估 教程」).
+  }
+  const allKeywords = chapters.flatMap((c) => c.summary?.keywords || [])
+  const topic = buildTopicProfile({
+    courseTitle: outline.courseTitle,
+    keywords: allKeywords,
+    texts,
+    domain,
+    configDomain: options?.domain || '',
+  })
+  job.topic = { anchor: topic.anchor, vocab: topic.vocab.slice(0, 12), negative: topic.negative.slice(0, 8), lang: topic.lang }
+  push({ phase: 'search', message: `检索 B 站网课（主题：${topic.anchor || '未识别'}）…`, progress: 0.75 })
+
+  let series = []
+  let seriesLinks = []
+  if (options?.withVideos !== false) {
     const freq = new Map()
     for (const c of chapters) {
       for (const k of c.summary?.keywords || []) freq.set(k, (freq.get(k) || 0) + 1)
@@ -466,15 +444,57 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       .map(([k]) => k)
       .filter((k) => k.length >= 4 && k.length <= 16)
       .slice(0, 2)
-    if (topKeywords.length) {
-      try {
-        const refined = await bili.recommendSeries(outline.courseTitle, { extraQueries: topKeywords, domain })
-        if ((refined.series?.length || 0) > series.length) series = refined.series
-        if (refined.links?.length) seriesLinks = [...refined.links, ...seriesLinks].slice(0, 3)
-      } catch (error) {
-        warnings.push(`系列课补充检索失败：${error.message}`)
+
+    try {
+      const seriesResult = await bili.recommendSeries(outline.courseTitle, { domain, topic, extraQueries: topKeywords })
+      series = seriesResult.series || []
+      seriesLinks = seriesResult.links || []
+      if (seriesResult.fallback) {
+        job.fallback = true
+        if (seriesResult.reason) warnings.push(`系列课检索受限：${seriesResult.reason}`)
       }
+    } catch (error) {
+      warnings.push(`系列课检索失败：${error.message}`)
     }
+
+    await mapLimit(chapters, Math.min(3, concurrency), async (chapter) => {
+      const keywords = chapter.summary?.keywords || []
+      try {
+        const res = await bili.recommendChapter(keywords, {
+          domain,
+          chapterTitle: chapter.title,
+          topic,
+        })
+        job.byChapter[chapter.index] = {
+          videos: res.videos.map((v) => ({
+            bvid: v.bvid,
+            title: v.title,
+            author: v.author,
+            play: v.play,
+            duration: v.duration,
+            score: v.score,
+            relevance: v.relevance ?? null,
+            url: v.url,
+            series: v.series,
+            parts: v.partCount || 0,
+            bestPart: v.bestPart || null,
+          })),
+          queries: res.queries,
+          level: res.level ?? null,
+          filteredOut: res.filteredOut ?? 0,
+          ok: res.ok,
+          fallback: res.fallback,
+          reason: res.reason || '',
+        }
+        if (res.fallback && !job.fallback) {
+          job.fallback = true
+          warnings.push(`第 ${chapter.index} 章主题过滤后没有对题网课，附录改用搜索链接`)
+        }
+      } catch (error) {
+        warnings.push(`第 ${chapter.index} 章检索失败：${error.message}`)
+      }
+      push({})
+    })
     job.series = series
     job.seriesLinks = seriesLinks
   }
@@ -735,10 +755,22 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   if (options?.withVideos !== false && bili) {
     push({ message: `重新检索第 ${target.index} 章的 B 站网课…`, progress: 0.6 })
     try {
-      const keywords = (summary.keywords || []).slice(0, chapterCount > 12 ? 1 : 2)
-      const res = await bili.recommendChapter(keywords.length ? keywords : [target.title], {
+      // rebuild the topic from what the job already knows; the chapter bodies of
+      // other chapters are not on disk, so their key points stand in for text
+      const topic = buildTopicProfile({
+        courseTitle: previous.courseTitle || outline?.courseTitle || '',
+        keywords: (previous.chapters || []).flatMap((c) => c.summary?.keywords || []).concat(summary.keywords || []),
+        texts: [
+          (previous.chapters || []).map((c) => (c.summary?.key_points || []).map(pointText).join(' ')).join('\n'),
+          target.text,
+        ],
+        domain,
+      })
+      const keywords = cleanKeywords(summary.keywords || [], 3)
+      const res = await bili.recommendChapter(keywords, {
         domain,
         chapterTitle: target.title,
+        topic,
       })
       job.byChapter = {
         ...(previous.byChapter || {}),
