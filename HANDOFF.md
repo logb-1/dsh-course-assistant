@@ -311,3 +311,33 @@ node tools/nightly-visual.mjs              # 真面板（需 web-token.txt）
 4. 两个 README 由 `data/plugins` 生成，PR 里**不要动**；只加 yml 是官方接受的常见形态。
 
 **发布**：1.5.0 已发 npm，tag `v1.5.0`。
+## 十四、2026-10-24 18:05 · 每次重启报错的根因（已修）
+
+**现象**：重启 DSH 后进入界面必然报错，插件不加载（`/course-assistant/health` 404）。
+
+**日志**（`%APPDATA%\@deepseek-ai\dsh-desktop\logs\crash-*-web-boot.log`，11:54 / 11:55 / 17:52 / 17:54 / 17:58 共 5 次，全部同一原因）：
+
+```
+Error: web boot: 1 entry did not activate
+dsh-course-assistant: import failed (see console for the import error)
+renderer: Uncaught Error: client-modules: duplicate factory registration for "@local/course-assistant"
+          (bundle executed twice without invalidate?)
+```
+
+**根因**：profile 的 `node_modules` 里同一个插件目录挂了**两个 junction**：
+
+```
+node_modules\dsh-course-assistant      -> ...\default-workspace\course-assistant   （package.json 声明，保留）
+node_modules\@local\course-assistant   -> ...\default-workspace\course-assistant   （2026-10-23 12:44 的旧别名，残留）
+```
+
+旧别名在 `package.json` 与 `pnpm-lock.yaml` 里都已不存在（pnpm 改依赖名时不清理旧 alias 链接），
+但客户端的 client-modules 加载器会扫描 node_modules，同一份 `client.js` 被执行两次，
+而它内部固定 `id: '@local/course-assistant'`，于是第二次注册直接抛 duplicate → 整个插件导入失败。
+
+**修复**：`cmd /c rmdir "C:\Users\ThinkPad\.dsh\profiles\desktop\node_modules\@local\course-assistant"`
+（只删链接，真实目录 12 个文件完好），重启 DSH 即可。
+
+**注意**：`client.js` 第 5 行的 `id` 仍是 `@local/course-assistant`（历史遗留，与包名 `dsh-course-assistant` 不一致）。
+单一 junction 时它工作正常（10-23 21:33 health=1.5.0 就是证明），但如果以后再次出现"两个模块名指向同一目录"，
+会立刻复发。真要根治，应把 client 的 id 改成包名并同步所有 `inject` 引用——属于独立改动，暂不动。
