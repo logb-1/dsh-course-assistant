@@ -398,3 +398,46 @@ window.__ModuleLoader__.load({id:"dsh-cost-meter", chunk:"client.codex.js", fact
 2. 模块 id 与包名不一致 → rc.3 判定条目未激活（1.5.2）
 
 验证依据：`client-contract` 通过、`node --check` 通过、`package.json` 无 BOM、版本 1.5.2。
+
+## 十五、2026-10-24 18:40 · rc.3 更新后「总结全部失败」的根因
+
+**现象**：插件能启动、能跑完，但每一章都报
+`llm-deepseek: no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY ...`，
+11 章全部走本地兜底，用户看到的是「功能全爆」。
+
+**根因**：`~/.dsh/profiles/desktop/cordis.patch.yml` 在 rc.3 启动时被重写（18:24:56 的 910 字节 →
+18:31:12 的 661 字节），**删掉了 `agent-default-model` 这一行**。该行的默认值来自
+`@deepseek-ai/dsh-base` 的内置 patch：
+
+```yaml
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: deepseek-official   # ← 没有 API key 的 route
+    model: deepseek-flash
+```
+
+用户的登录是 DeepSeek 账号（凭据里是 `deepseek-account-platform/default` token），
+覆盖行被删后 provider 回落到 `deepseek-official`，于是每一次 LLM 调用都因缺 key 失败。
+插件本身没有 key，`index.js` 里 `ctx.get('agentDefaultModel')?.currentSelection?.()` 拿到什么就用什么。
+
+**修复**（两处，重启生效）：
+1. profile patch 恢复 `agent-default-model`：`provider: deepseek-account` / `model: deepseek-flash` /
+   `reasoningEffort: high`（与 18:23 的备份一致；当前会话本身也在用 `deepseek-account`，
+   session 记录里 29 处 account、0 处 official）。
+2. 给插件行加独立覆盖，避免再次被全局默认拖累：
+
+```yaml
+- id: course-assistant
+  name: dsh-course-assistant
+  config:
+    provider: deepseek-account
+    model: deepseek-flash
+```
+
+**排查方法（以后遇到同类）**：看 profile patch 里还有没有 `agent-default-model`；
+`~/.dsh/.credentials.yaml` 里 `records` 有哪些 route 的 token；
+`storages/session_projcache/sessions/*.json` 里 grep `deepseek-account` 确认当前会话实际用哪个 provider。
+
+**仍待做**：插件应对「provider 无 key」做一次显式检测，直接提示"请在设置里选模型"，
+而不是 11 章各报一遍同样的错，再全部退回本地摘要。
