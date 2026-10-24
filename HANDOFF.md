@@ -374,3 +374,27 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
 **仍待确认**：重启后 `health` 是否报 1.5.1、crash 日志是否停止新增、面板是否出现。
 若仍失败，下一步应把 client 的模块 id 从 `@local/course-assistant` 改成包名 `dsh-course-assistant`
 （现在 id 与包名不一致，是这轮双重注册的放大器），并同步检查 `inject` 引用。
+
+### 最终根因（2026-10-24 18:35，rc.3 更新后）
+
+18:30 的崩溃日志显示 **app 已从 0.2.1-rc.2 更新到 0.2.1-rc.3**，且 duplicate 报错消失、只剩
+`web boot: 1 entry did not activate / dsh-course-assistant: import failed`，控制台无其他错误。
+
+对照可用插件 cost-meter 的客户端产物：
+
+```js
+window.__ModuleLoader__.load({id:"dsh-cost-meter", chunk:"client.codex.js", factory:...})
+```
+
+→ **约定：注册 id 必须等于包名**。我们的 `client.js` 一直写的是早期工作区别名
+`id: '@local/course-assistant'`，rc.2 容忍，rc.3 不再容忍：条目名是 `dsh-course-assistant`，
+按名字找不到已注册的工厂 → 该条目"did not activate"。
+
+**1.5.2 修复**：`id: 'dsh-course-assistant'`（与包名一致），旧注释里的 `@local` 也一并更正。
+守卫保留（防重复求值）。`index.js` 顶部注释里的 `@local` 仅为文字，不影响加载。
+
+至此两条独立问题都修掉了：
+1. `immediately: true` + 无守卫 → 重复注册抛异常（1.5.1）
+2. 模块 id 与包名不一致 → rc.3 判定条目未激活（1.5.2）
+
+验证依据：`client-contract` 通过、`node --check` 通过、`package.json` 无 BOM、版本 1.5.2。
