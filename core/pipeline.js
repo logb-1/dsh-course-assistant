@@ -125,6 +125,22 @@ async function summarizeWithRetry(args) {
   }
 }
 
+/** Stable key for "same files + same settings" — enables a zero-cost rerun. */
+export function dedupeKeyFor(inputs, options, llm) {
+  const files = (inputs || [])
+    .map((file) => file?.sha256 || file?.name || '')
+    .sort()
+    .join('+')
+  const scope = [
+    llm?.provider || '-',
+    llm?.model || '-',
+    options?.withVideos === false ? 'v0' : 'v1',
+    options?.knowledge === false ? 'k0' : 'k1',
+    options?.domain || '',
+  ].join('|')
+  return createHash('sha256').update(files).update('|').update(scope).digest('hex').slice(0, 16)
+}
+
 /* ------------------------- shared preparation step ------------------------- */
 
 /**
@@ -255,6 +271,16 @@ function manifestInputs(inputs, store) {
 export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   const { store, bili, llm } = deps
   const started = Date.now()
+  const dedupeKey = dedupeKeyFor(inputs, options, llm)
+  if (!options?.noReuse) {
+    const reusable = store.findReusableJob?.(dedupeKey)
+    if (reusable) {
+      try {
+        emit?.({ ...reusable, reused: true })
+      } catch {}
+      return reusable
+    }
+  }
   const concurrency = Math.max(1, Math.min(5, Number(options?.concurrency) || 4))
   const warnings = []
 
@@ -606,6 +632,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   try {
     store.saveSearchIndex?.(id, serializePassages(buildIndex(chapters, texts)))
   } catch {}
+  store.rememberJobKey?.(dedupeKey, job.id)
   push({
     status: 'done',
     phase: 'done',

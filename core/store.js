@@ -40,6 +40,7 @@ export function createStore(dataDir) {
   const uploadsDir = ensure(join(dataDir, 'uploads'))
   const reportsDir = ensure(join(dataDir, 'reports'))
   const jobsDir = ensure(join(dataDir, 'jobs'))
+  const jobIndexPath = join(jobsDir, 'index.json')
   const ocrDir = ensure(join(dataDir, 'ocr'))
   const knowledgeDir = ensure(join(dataDir, 'knowledge'))
   const cachePath = join(dataDir, 'cache.json')
@@ -99,6 +100,46 @@ export function createStore(dataDir) {
   function writeKnowledge(hash, value) {
     try {
       atomicWrite(knowledgePath(hash), JSON.stringify(value))
+    } catch {}
+  }
+
+  function readJobIndex() {
+    try {
+      return JSON.parse(readFileSync(jobIndexPath, 'utf8'))
+    } catch {
+      return {}
+    }
+  }
+
+  /** Reuse a finished job when the same files were analysed with the same settings. */
+  function findReusableJob(key) {
+    if (!key) return null
+    const entry = readJobIndex()[key]
+    if (!entry?.id) return null
+    const job = readJob(entry.id)
+    return job && job.status === 'done' && job.reportPath ? job : null
+  }
+
+  function rememberJobKey(key, jobId) {
+    if (!key) return
+    try {
+      const index = readJobIndex()
+      index[key] = { id: jobId, at: Date.now() }
+      atomicWrite(jobIndexPath, JSON.stringify(index))
+    } catch {}
+  }
+
+  function forgetJobKey(jobId) {
+    try {
+      const index = readJobIndex()
+      let changed = false
+      for (const [key, value] of Object.entries(index)) {
+        if (value?.id === jobId) {
+          delete index[key]
+          changed = true
+        }
+      }
+      if (changed) atomicWrite(jobIndexPath, JSON.stringify(index))
     } catch {}
   }
 
@@ -287,6 +328,9 @@ export function createStore(dataDir) {
           .map((n) => {
             const p = join(jobsDir, n)
             return {
+    findReusableJob,
+    rememberJobKey,
+    forgetJobKey,
     readKnowledge,
     writeKnowledge, id: n.replace(/\.json$/, ''), mtime: statSync(p).mtimeMs }
           })

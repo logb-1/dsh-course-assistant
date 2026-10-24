@@ -36,6 +36,7 @@ import { addEdge, topoOrder, validateEdges } from '../core/graph.js'
 import { FAILURE, classifyError, nextChapterAction, planChapters } from '../core/schedule.js'
 import { mindmapMermaid, mindmapTree, renderMindmapSection } from '../core/mindmap.js'
 import { buildKnowledgePrompt } from '../core/knowledge.js'
+import { dedupeKeyFor } from '../core/pipeline.js'
 import { buildTopicProfile } from '../core/topic.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
@@ -566,6 +567,18 @@ check('知识点抽取提示：只允许引用已列出的概念', () => {
   assert(prompt.includes('不能新造 id'), '必须禁止模型自造 id')
   assert(prompt.includes('前面的章 → 后面的章'), '必须限制跨章方向')
   return 'prompt ok'
+})
+
+check('去重键：文件与设置相同才复用', () => {
+  const inputs = [{ sha256: 'aaa' }, { sha256: 'bbb' }]
+  const a = dedupeKeyFor(inputs, {}, { provider: 'deepseek-account', model: 'deepseek-flash' })
+  const b = dedupeKeyFor([...inputs].reverse(), {}, { provider: 'deepseek-account', model: 'deepseek-flash' })
+  assert(a === b, '文件顺序不应影响去重键')
+  const otherModel = dedupeKeyFor(inputs, {}, { provider: 'deepseek-account', model: 'deepseek-pro' })
+  assert(a !== otherModel, '换模型必须生成不同的键')
+  const noVideos = dedupeKeyFor(inputs, { withVideos: false }, { provider: 'deepseek-account', model: 'deepseek-flash' })
+  assert(a !== noVideos, '关掉网课检索应是不同的键')
+  return a
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

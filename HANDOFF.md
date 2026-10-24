@@ -475,3 +475,11 @@ window.__ModuleLoader__.load({id:"dsh-cost-meter", chunk:"client.codex.js", fact
 
 P2 job 级去重（同 sha+同参数 → 直接复用 job，0 次模型调用）+ 历史面板；P3 看板/独立 HTML；P4 BKT（暂缓）。
 启用方式：重启 DSH 或在 Plugins 页关/开插件。
+
+### P2 已落地（引擎侧）
+
+- `core/store.js`：`jobs/index.json` 记录 `dedupeKey → jobId`，`findReusableJob/rememberJobKey/forgetJobKey`。
+- `core/pipeline.js`：`dedupeKeyFor(输入 sha + provider/model + withVideos + knowledge + domain)`；
+  命中已完成的 job 时**直接返回**（0 次模型调用、0 次 B 站请求），路由侧表现为秒回。
+- 单测：文件顺序无关、换模型/关网课生成不同键（第 25 项）。
+- **未做**：前端「最近报告/历史」列表（数据已在 `jobs/index.json`，只差 UI）。
