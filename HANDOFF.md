@@ -490,3 +490,14 @@ P2 job 级去重（同 sha+同参数 → 直接复用 job，0 次模型调用）
 - `core/store.js#writeDashboard`：写到 `reports/<课程>-<日期>-dashboard.html`，与报告同目录。
 - `pipeline.js`：报告生成前渲染看板，`job.dashboardPath` 记录路径；`report.js` 头部加一行「学习看板：<路径>（浏览器打开）」。
 - 单测第 26 项：完整性、KPI、概念、阻塞标记、**不含 `<script>`**（离线安全）。
+
+### 2026-10-24 20:00 实跑发现的两个 bug（已修）
+
+1. **知识图静默为空**：`extractKnowledge` 只认 `chunk.type === 'text'`，而 Host `llm` 服务实际发的是
+   `text-delta`（见 `summarize.js#collect`）。结果 raw 永远为空 → `parseJson` 返回 null → 知识图为 null，
+   且**没有警告**。修复：识别 `text-delta`/`text`，`finish.kind === 'error'` 抛错，空回包抛"模型没有返回内容"；
+   pipeline 在 `!knowledge` 时补一条警告，不再静默。
+   新增第 27 项单测：假 LLM 以 `text-delta` 分两条吐出 JSON，断言 4 概念 / 3 条合法边 / 1 条反向边被拒。
+2. **章名重复编号**：大纲章名自带「第 2 章 数据的机器级表示」，mindmap 又加前缀 →「第1章 第 2 章 …」。
+   修复：`mindmap.js#bareTitle()` 剥掉已有的「第 N 章」。
+3. 顺带：`## 前置知识路径` 从「课程目录」中间移到目录之后，成为独立段落。

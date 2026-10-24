@@ -567,6 +567,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
         signal,
         maxTokens: 2400,
       }))
+      if (!knowledge) warnings.push('知识点依赖图：模型没有返回可用的概念，本次跳过前置校验')
       if (knowledge && !cached) store.writeKnowledge?.(graphHash, knowledge)
       if (knowledge) {
         const graph = createGraph(knowledge.concepts, knowledge.edges)

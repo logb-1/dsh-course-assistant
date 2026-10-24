@@ -35,7 +35,7 @@ import { cleanKeywords, cleanTerm } from '../core/terms.js'
 import { addEdge, topoOrder, validateEdges } from '../core/graph.js'
 import { FAILURE, classifyError, nextChapterAction, planChapters } from '../core/schedule.js'
 import { mindmapMermaid, mindmapTree, renderMindmapSection } from '../core/mindmap.js'
-import { buildKnowledgePrompt } from '../core/knowledge.js'
+import { buildKnowledgePrompt, extractKnowledge } from '../core/knowledge.js'
 import { dedupeKeyFor } from '../core/pipeline.js'
 import { renderDashboardHtml } from '../core/dashboard.js'
 import { buildTopicProfile } from '../core/topic.js'
@@ -604,6 +604,44 @@ check('看板：章节/概念/前置阻塞都进 HTML', () => {
   assert(html.includes('未满足'), '阻塞章要标出缺失前置')
   assert(!html.includes('<script'), '不能带脚本（离线安全）')
   return html.length + ' bytes'
+})
+
+check('知识图抽取：识别 text-delta 流并过结构校验', async () => {
+  const payload = JSON.stringify({
+    concepts: [
+      { id: 'bit', name: '位', chapter: 1, evidence: '二进制位' },
+      { id: 'unsigned', name: '无符号整数', chapter: 2, evidence: '无符号整数表示' },
+      { id: 'twos', name: '补码', chapter: 2, evidence: '补码表示法' },
+      { id: 'float', name: '浮点数', chapter: 3, evidence: 'IEEE754 浮点' },
+    ],
+    edges: [
+      { from: 'bit', to: 'unsigned' },
+      { from: 'unsigned', to: 'twos' },
+      { from: 'twos', to: 'float' },
+      { from: 'float', to: 'bit' },
+    ],
+  })
+  const llm = {
+    stream: () =>
+      (async function* () {
+        yield { type: 'text-delta', text: payload.slice(0, 40) }
+        yield { type: 'text-delta', text: payload.slice(40) }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })(),
+  }
+  const result = await extractKnowledge({
+    llm,
+    provider: 'p',
+    model: 'm',
+    courseTitle: '计算机系统基础',
+    chapters: [{ index: 1, title: '概述' }, { index: 2, title: '数据表示' }, { index: 3, title: '浮点数' }],
+    texts: ['一', '二', '三'],
+  })
+  assert(result, '应当解析出知识图')
+  assert(result.concepts.length === 4, `概念数应为 4，实际 ${result.concepts?.length}`)
+  assert(result.stats.accepted === 3, `三条合法边应接受，实际 ${result.stats.accepted}`)
+  assert(result.stats.rejected === 1, '跨章反向的那条应被拒')
+  return `${result.stats.concepts} 概念 / ${result.stats.accepted} 边`
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

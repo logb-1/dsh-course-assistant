@@ -81,6 +81,7 @@ export async function extractKnowledge({ llm, provider, model, courseTitle, chap
   if (!llm || !chapters?.length || chapters.length < 2) return null
   const prompt = buildKnowledgePrompt({ courseTitle, chapters, texts })
   let raw = ''
+  let finish = null
   const stream = llm.stream({
     provider,
     model,
@@ -91,10 +92,15 @@ export async function extractKnowledge({ llm, provider, model, courseTitle, chap
     signal,
   })
   for await (const chunk of stream) {
-    if (chunk?.type === 'text' && chunk.text) raw += chunk.text
+    // the Host llm service emits `text-delta` (see summarize.js#collect); accepting
+    // only `text` silently produced an empty reply and a null graph
+    if (chunk?.type === 'text-delta' || chunk?.type === 'text') raw += chunk.text || chunk.delta || ''
+    else if (chunk?.type === 'finish') finish = chunk.reason
   }
+  if (finish && finish.kind === 'error') throw new Error(finish.failure?.message || '知识图模型调用失败')
+  if (!raw.trim()) throw new Error('模型没有返回内容（知识图）')
   const parsed = parseJson(raw)
-  if (!parsed) return null
+  if (!parsed) throw new Error('知识图返回的不是可解析 JSON')
 
   const chapterOf = new Map(chapters.map((c) => [c.index, c]))
   const concepts = []
