@@ -331,13 +331,46 @@ node_modules\dsh-course-assistant      -> ...\default-workspace\course-assistant
 node_modules\@local\course-assistant   -> ...\default-workspace\course-assistant   （2026-10-23 12:44 的旧别名，残留）
 ```
 
-旧别名在 `package.json` 与 `pnpm-lock.yaml` 里都已不存在（pnpm 改依赖名时不清理旧 alias 链接），
-但客户端的 client-modules 加载器会扫描 node_modules，同一份 `client.js` 被执行两次，
-而它内部固定 `id: '@local/course-assistant'`，于是第二次注册直接抛 duplicate → 整个插件导入失败。
+旧别名在 `package.json` 与 `pnpm-lock.yaml` 里都已不存在（pnpm 改依赖名时不清理旧 alias 链接）。
 
-**修复**：`cmd /c rmdir "C:\Users\ThinkPad\.dsh\profiles\desktop\node_modules\@local\course-assistant"`
-（只删链接，真实目录 12 个文件完好），重启 DSH 即可。
+**第一次修复（错误判断，无效）**：删掉 `node_modules\@local\course-assistant` 这个残留 junction，
+重启后（18:07 的 crash 日志）**仍然报同样的错**，说明双份目录不是原因——那时 `@local` 下只剩 `cs-review`，
+`client.js` 还是被执行了两次。这一步的结论只保留"顺手清理残留链接"，不构成修复。
 
-**注意**：`client.js` 第 5 行的 `id` 仍是 `@local/course-assistant`（历史遗留，与包名 `dsh-course-assistant` 不一致）。
-单一 junction 时它工作正常（10-23 21:33 health=1.5.0 就是证明），但如果以后再次出现"两个模块名指向同一目录"，
-会立刻复发。真要根治，应把 client 的 id 改成包名并同步所有 `inject` 引用——属于独立改动，暂不动。
+### 真正的原因（2026-10-24 18:25 修正）
+
+对比 profile 里四个插件的 `dsh.client` 清单：
+
+| 插件 | dsh.client |
+|---|---|
+| dsh-cost-meter | `{"platform":"web"}` |
+| dsh-better-sidebar | `{"inject":[...],"platform":"web"}` |
+| dsh-ops | `{"inject":[...],"platform":"web"}` |
+| **dsh-course-assistant** | `{"platform":"web","immediately":true,"inject":[...]}` ← 只有我们多了这个 |
+
+`immediately: true` 让客户端 bundle 在启动时**预载**一次，随后模块注册流程**再加载**一次；
+`client.js` 顶层无条件调用 `window.__ModuleLoader__.load({ id: '@local/course-assistant' })`，
+第二次注册同 id 直接抛 `duplicate factory registration`，把整个插件 import 打断，
+最终表现为 `web boot: 1 entry did not activate`、应用弹崩溃框。
+
+### 修复（1.5.1）
+
+1. `package.json`：删掉 `dsh.client.immediately`（与其余三个插件对齐，它们都没有）。
+2. `client.js`：注册前加一次性守卫，`window.__COURSE_ASSISTANT_CLIENT__` 为真就跳过，
+   即使加载器确实求值两次也不会抛错：
+
+```js
+if (!window.__COURSE_ASSISTANT_CLIENT__) {
+  window.__COURSE_ASSISTANT_CLIENT__ = true
+  window.__ModuleLoader__.load({ ... })
+}
+```
+
+守卫必须挂在 `window` 上：模块级变量在"第二次求值"时是全新的，挡不住。
+
+验证：`node --check client.js`、`tools/client-contract.mjs`（三槽位）、`tools/regress.mjs --unit --strict`（19 项）全绿；
+提交 `22192e5`（守卫）、`bec1b1f`（1.5.1 去 immediately + 版本号）。
+
+**仍待确认**：重启后 `health` 是否报 1.5.1、crash 日志是否停止新增、面板是否出现。
+若仍失败，下一步应把 client 的模块 id 从 `@local/course-assistant` 改成包名 `dsh-course-assistant`
+（现在 id 与包名不一致，是这轮双重注册的放大器），并同步检查 `inject` 引用。
