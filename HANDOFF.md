@@ -295,11 +295,13 @@ node tools/nightly-visual.mjs              # 真面板（需 web-token.txt）
   `url` / `name` / `category: docs` / `description.en` / `description.zh`（en 含逗号无 ": "，仍加引号）。
 - PR：**https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/8996**（open，mergeable，changed_files=1）
 - **PR check 已通过**（`success`，约 6 分钟：npm ci + awesome-lint + 站点构建全绿）。
-- **Submission gate 红**，但唯一原因是仓库年龄：
-  `repository is 0.5 days old (needs 1) — nothing to do: this check re-runs by itself and should clear in about 12h`
-  上游 `regate.yml`（cron `19 */6 * * *`）会对"已到期"的 PR 重跑 `PR check` 并再次触发 gate；
-  本仓库创建于 `2026-10-23T05:21:46Z`，满 1 天 = `2026-10-24T05:21:46Z`（北京 13:21:46），
-  下一班 regate 在 `2026-10-24T06:19Z`（北京 14:19）→ 预计那时自动转绿，**无需重提 PR**。
+- **Submission gate 已通过**（2026-10-24T07:35Z，原文：`All 1 submitted entry passes: dsh.bundle declared, repo old enough, enough commits.`）
+  → 投稿技术上全部达标，`mergeable_state: clean`，**只等维护者人工合并**。
+- 走通路径：仓库满 1 天后（`2026-10-24T05:21:46Z`），在 fork 分支补一个**空 commit**
+  （`944596f`，等价 `git commit --allow-empty`，消息 `Re-run submission checks now that the repository is one day old`）
+  重新触发 `pull_request` 事件 → PR check 重跑 → gate 重新判定 → 通过。
+  比等 `regate.yml` 可靠：它每班只重跑 20 个 PR（`MAX_RERUNS: 20`）且按 PR 编号升序，
+  新 PR 排不上队（18:37Z / 00:58Z / 06:43Z 三班都没轮到我们）。
 - 分类取 `docs`：该分类现有条目就是 PDF 解析、知识库、文档阅读模式这类，语义吻合。
 
 注意事项（下次投稿别踩）：
