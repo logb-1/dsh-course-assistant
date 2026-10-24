@@ -170,6 +170,10 @@ export function buildReport(input) {
     out.push('>')
     for (const w of meta.warnings) out.push(`> ⚠️ ${w}`)
   }
+  if (meta.dashboardPath) {
+    out.push('>')
+    out.push(`> 学习看板：\`${meta.dashboardPath}\`（用浏览器打开，离线可用）`)
+  }
   out.push('')
 
   out.push('## 一、课程目录')

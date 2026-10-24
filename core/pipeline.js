@@ -15,6 +15,7 @@ import { parseFile } from './parser.js'
 import { buildOutline } from './outline.js'
 import { summarizeChapter, summarizeCourse, mapLimit, localSummary, CHAPTER_PROMPT_VERSION } from './summarize.js'
 import { buildReport } from './report.js'
+import { renderDashboardHtml } from './dashboard.js'
 import { assessQuality, describeQuality } from './quality.js'
 import { ocrPdf, ocrStatus } from './ocr.js'
 import { classifyError, planChapters, nextChapterAction, FAILURE } from './schedule.js'
@@ -606,6 +607,22 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   push({ phase: 'report', message: '生成报告…', progress: 0.9, courseSummary })
 
   /* ---------------- 5. report ---------------- */
+  let dashboardPath = ''
+  try {
+    const dashboardHtml = renderDashboardHtml({
+      courseTitle: outline.courseTitle,
+      chapters,
+      plan,
+      knowledge,
+      byChapter: job.byChapter,
+      meta: { model: modelLabel, generatedAt: new Date().toISOString().slice(0, 16).replace('T', ' ') },
+    })
+    dashboardPath = store.writeDashboard(outline.courseTitle, dashboardHtml)
+    job.dashboardPath = dashboardPath
+  } catch (error) {
+    warnings.push(`看板生成失败：${error.message}`)
+  }
+
   const markdown = buildReport({
     courseTitle: outline.courseTitle,
     files: job.files,
@@ -625,6 +642,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       domain: job.domain,
       offline: !useModel || chapters.every((c) => c.summary?.offline),
       generatedAt: new Date().toISOString().slice(0, 19).replace('T', ' '),
+      dashboardPath,
     },
   })
   const reportPath = store.writeReport(outline.courseTitle || 'course', markdown)

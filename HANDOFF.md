@@ -483,3 +483,10 @@ P2 job 级去重（同 sha+同参数 → 直接复用 job，0 次模型调用）
   命中已完成的 job 时**直接返回**（0 次模型调用、0 次 B 站请求），路由侧表现为秒回。
 - 单测：文件顺序无关、换模型/关网课生成不同键（第 25 项）。
 - **未做**：前端「最近报告/历史」列表（数据已在 `jobs/index.json`，只差 UI）。
+
+### P3 已落地（独立 HTML 看板）
+
+- `core/dashboard.js`：`renderDashboardHtml()` 生成**单文件、离线可开**的看板：KPI 卡片、章节/概念 SVG 树、学习计划表、前置阻塞提示。无脚本、无 CDN、无依赖。
+- `core/store.js#writeDashboard`：写到 `reports/<课程>-<日期>-dashboard.html`，与报告同目录。
+- `pipeline.js`：报告生成前渲染看板，`job.dashboardPath` 记录路径；`report.js` 头部加一行「学习看板：<路径>（浏览器打开）」。
+- 单测第 26 项：完整性、KPI、概念、阻塞标记、**不含 `<script>`**（离线安全）。

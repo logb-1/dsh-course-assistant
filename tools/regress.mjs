@@ -37,6 +37,7 @@ import { FAILURE, classifyError, nextChapterAction, planChapters } from '../core
 import { mindmapMermaid, mindmapTree, renderMindmapSection } from '../core/mindmap.js'
 import { buildKnowledgePrompt } from '../core/knowledge.js'
 import { dedupeKeyFor } from '../core/pipeline.js'
+import { renderDashboardHtml } from '../core/dashboard.js'
 import { buildTopicProfile } from '../core/topic.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
@@ -579,6 +580,30 @@ check('去重键：文件与设置相同才复用', () => {
   const noVideos = dedupeKeyFor(inputs, { withVideos: false }, { provider: 'deepseek-account', model: 'deepseek-flash' })
   assert(a !== noVideos, '关掉网课检索应是不同的键')
   return a
+})
+
+check('看板：章节/概念/前置阻塞都进 HTML', () => {
+  const chapters = [{ index: 1, title: '概述' }, { index: 2, title: '数据表示' }]
+  const plan = [
+    { index: 1, blocked: false, missing: [], concepts: 1 },
+    { index: 2, blocked: true, missing: ['twos'], concepts: 2 },
+  ]
+  const knowledge = { concepts: [{ id: 'twos', name: '补码', chapter: 2 }], edges: [{ from: 'a', to: 'twos' }] }
+  const html = renderDashboardHtml({
+    courseTitle: '计算机系统基础',
+    chapters,
+    plan,
+    knowledge,
+    byChapter: { 1: { videos: [{}, {}] } },
+    meta: { generatedAt: '2026-10-24 20:00' },
+  })
+  assert(html.startsWith('<!doctype html>'), '必须是完整 HTML')
+  assert(html.includes('学习看板'), '标题里要有看板')
+  assert(html.includes('前置阻塞'), 'KPI 里要有前置阻塞')
+  assert(html.includes('补码'), 'SVG 里要画出概念')
+  assert(html.includes('未满足'), '阻塞章要标出缺失前置')
+  assert(!html.includes('<script'), '不能带脚本（离线安全）')
+  return html.length + ' bytes'
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

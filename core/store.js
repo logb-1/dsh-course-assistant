@@ -351,6 +351,16 @@ export function createStore(dataDir) {
       return path
     },
 
+    writeDashboard(baseName, html) {
+      const safe = String(baseName || 'report').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80)
+      const stem = `${safe}-${new Date().toISOString().slice(0, 10)}`
+      let path = join(reportsDir, `${stem}-dashboard.html`)
+      let n = 1
+      while (existsSync(path)) path = join(reportsDir, `${stem}-dashboard-${n++}.html`)
+      writeFileSync(path, html, 'utf8')
+      return path
+    },
+
     writeBytes(path, bytes) {
       writeFileSync(path, bytes)
       return path
