@@ -35,7 +35,7 @@ import { cleanKeywords, cleanTerm } from '../core/terms.js'
 import { addEdge, topoOrder, validateEdges } from '../core/graph.js'
 import { FAILURE, classifyError, nextChapterAction, planChapters } from '../core/schedule.js'
 import { mindmapMermaid, mindmapTree, renderMindmapSection } from '../core/mindmap.js'
-import { buildKnowledgePrompt, extractKnowledge } from '../core/knowledge.js'
+import { buildKnowledgePrompt, extractKnowledge, fallbackKnowledge } from '../core/knowledge.js'
 import { dedupeKeyFor } from '../core/pipeline.js'
 import { renderDashboardHtml } from '../core/dashboard.js'
 import { buildTopicProfile } from '../core/topic.js'
@@ -642,6 +642,20 @@ check('知识图抽取：识别 text-delta 流并过结构校验', async () => {
   assert(result.stats.accepted === 3, `三条合法边应接受，实际 ${result.stats.accepted}`)
   assert(result.stats.rejected === 1, '跨章反向的那条应被拒')
   return `${result.stats.concepts} 概念 / ${result.stats.accepted} 边`
+})
+
+check('知识图兜底：模型空回包时按章节顺序生成前置链', () => {
+  const chapters = [
+    { index: 1, title: '概述', summary: { keywords: ['计算机系统 概述'] } },
+    { index: 2, title: '数据表示', summary: { keywords: ['计算机系统 补码'] } },
+    { index: 3, title: '浮点数', summary: { keywords: ['计算机系统 IEEE754'] } },
+  ]
+  const graph = fallbackKnowledge(chapters)
+  assert(graph.concepts.length === 3, `概念数应为 3，实际 ${graph.concepts.length}`)
+  assert(graph.edges.length === 2, `顺序边应为 2，实际 ${graph.edges.length}`)
+  assert(graph.fallback === true, '应标记为兜底')
+  assert(graph.stats.accepted === 2, '两条顺序边都应通过校验')
+  return `${graph.stats.concepts} 概念 / ${graph.stats.accepted} 边`
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

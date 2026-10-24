@@ -20,7 +20,7 @@ import { assessQuality, describeQuality } from './quality.js'
 import { ocrPdf, ocrStatus } from './ocr.js'
 import { classifyError, planChapters, nextChapterAction, FAILURE } from './schedule.js'
 import { createGraph } from './graph.js'
-import { extractKnowledge } from './knowledge.js'
+import { extractKnowledge, fallbackKnowledge } from './knowledge.js'
 import { detectDomain } from './domain.js'
 import { evaluateSummary, describeConfidence, pointText, pointEvidence, normalizeForMatch } from './verify.js'
 import { buildIndex, serializePassages } from './search.js'
@@ -557,16 +557,40 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
         .digest('hex')
         .slice(0, 16)
       const cached = store.readKnowledge?.(graphHash)
-      knowledge = cached || (await extractKnowledge({
-        llm,
-        provider: llm.provider,
-        model: llm.model,
-        courseTitle: outline.courseTitle,
-        chapters,
-        texts,
-        signal,
-        maxTokens: 2400,
-      }))
+      if (cached) {
+        knowledge = cached
+      } else {
+        // Same idea as chapter summaries: a reasoning model that returns nothing
+        // has spent the budget, so give it more room and less input before giving up.
+        const ladder = [
+          { maxTokens: 3600, chapterLimit: 12 },
+          { maxTokens: 5200, chapterLimit: 8 },
+          { maxTokens: 5200, chapterLimit: 6 },
+        ]
+        for (const step of ladder) {
+          try {
+            knowledge = await extractKnowledge({
+              llm,
+              provider: llm.provider,
+              model: llm.model,
+              courseTitle: outline.courseTitle,
+              chapters,
+              texts,
+              signal,
+              maxTokens: step.maxTokens,
+              chapterLimit: step.chapterLimit,
+            })
+            if (knowledge) break
+          } catch (error) {
+            knowledge = null
+          }
+        }
+      }
+      if (!knowledge && chapters.length >= 2) {
+        // model gave nothing: chapter order is still a true prerequisite chain
+        knowledge = fallbackKnowledge(chapters)
+        warnings.push('模型没有返回知识图，已按章节顺序生成兜底前置关系')
+      }
       if (!knowledge) warnings.push('知识点依赖图：模型没有返回可用的概念，本次跳过前置校验')
       if (knowledge && !cached) store.writeKnowledge?.(graphHash, knowledge)
       if (knowledge) {

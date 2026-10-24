@@ -10,17 +10,17 @@
 import { validateEdges } from './graph.js'
 
 const PROMPT_VERSION = 1
-const MAX_CHAPTERS = 24
-const EXCERPT_CHARS = 220
+const MAX_CHAPTERS = 12
+const EXCERPT_CHARS = 160
 const MAX_CONCEPTS = 30
 
 export function knowledgePromptVersion() {
   return PROMPT_VERSION
 }
 
-export function buildKnowledgePrompt({ courseTitle, chapters, texts }) {
+export function buildKnowledgePrompt({ courseTitle, chapters, texts, chapterLimit = MAX_CHAPTERS }) {
   const lines = []
-  const count = Math.min(chapters.length, MAX_CHAPTERS)
+  const count = Math.min(chapters.length, chapterLimit)
   for (let i = 0; i < count; i += 1) {
     const chapter = chapters[i]
     const excerpt = String(texts?.[i] || '')
@@ -77,9 +77,9 @@ const slug = (value) =>
  *           chapters: object[], texts: string[], signal?: AbortSignal }} input
  * @returns {Promise<null | { concepts: object[], edges: object[], rejected: object[], stats: object }>}
  */
-export async function extractKnowledge({ llm, provider, model, courseTitle, chapters, texts, signal, maxTokens = 2400 }) {
+export async function extractKnowledge({ llm, provider, model, courseTitle, chapters, texts, signal, maxTokens = 3600, chapterLimit = MAX_CHAPTERS }) {
   if (!llm || !chapters?.length || chapters.length < 2) return null
-  const prompt = buildKnowledgePrompt({ courseTitle, chapters, texts })
+  const prompt = buildKnowledgePrompt({ courseTitle, chapters, texts, chapterLimit })
   let raw = ''
   let finish = null
   const stream = llm.stream({
@@ -138,6 +138,60 @@ export async function extractKnowledge({ llm, provider, model, courseTitle, chap
       accepted: accepted.length,
       rejected: rejected.length,
       depth: graphDepth(graph),
+    },
+  }
+}
+
+const slugify = (value) =>
+  String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+
+/**
+ * Deterministic fallback for "the model returned nothing".
+ *
+ * A study plan over chapters is inherently sequential, so chapter order itself is
+ * a defensible prerequisite: the concepts of chapter N+1 build on chapter N. It is
+ * coarse, but it is true, it costs nothing, and it keeps the feature usable when
+ * the model is unavailable — a silent empty graph was worse than a coarse one.
+ */
+export function fallbackKnowledge(chapters = []) {
+  const concepts = []
+  const edges = []
+  let previousLast = null
+  for (const chapter of chapters) {
+    const keywords = (chapter.summary?.keywords || [])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .slice(0, 2)
+    const names = keywords.length ? keywords : [chapter.title]
+    let first = null
+    let last = null
+    for (const name of names) {
+      const id = slugify(name)
+      if (!id) continue
+      concepts.push({ id, name, chapter: chapter.index, evidence: '章节关键词（模型未返回知识图时的兜底）' })
+      if (!first) first = id
+      last = id
+    }
+    if (previousLast && first) edges.push({ from: previousLast, to: first, evidence: '按课程章节顺序', source: 'fallback' })
+    if (last) previousLast = last
+  }
+  const { graph } = validateEdges(edges, concepts)
+  return {
+    concepts,
+    edges,
+    rejected: [],
+    fallback: true,
+    stats: {
+      concepts: concepts.length,
+      proposed: edges.length,
+      accepted: graph.edges.length,
+      rejected: 0,
+      depth: graphDepth(graph),
+      fallback: true,
     },
   }
 }
