@@ -1,7 +1,17 @@
-/* Client half of @local/course-assistant.
+﻿/* Client half of @local/course-assistant.
    Drag-and-drop course files → outline → knowledge points + Bilibili courses.
    Talks to the Host half over same-origin routes; no other network access. */
-window.__ModuleLoader__.load({
+
+/* Register exactly once per page.
+   The desktop web boot can evaluate a plugin bundle more than once (observed
+   2026-10-24: the same file ran twice, and the second __ModuleLoader__.load()
+   threw "duplicate factory registration", which failed the whole import and
+   blocked boot with "1 entry did not activate"). A module-level guard would be
+   useless here — a second evaluation is a fresh module — so the flag lives on
+   window and is cleared only by a real page reload. */
+if (!window.__COURSE_ASSISTANT_CLIENT__) {
+  window.__COURSE_ASSISTANT_CLIENT__ = true
+  window.__ModuleLoader__.load({
   id: '@local/course-assistant',
   factory(require) {
     const React = require('react')
@@ -910,3 +920,4 @@ window.__ModuleLoader__.load({
     }
   },
 })
+}
