@@ -1,6 +1,7 @@
 /**
  * Markdown report assembly (the deliverable format is fixed by the request).
  */
+import { renderMindmapSection } from './mindmap.js'
 import { searchLink } from './bili.js'
 import { describeQuality } from './quality.js'
 import { describeConfidence, pointText } from './verify.js'
@@ -140,6 +141,8 @@ export function buildReport(input) {
     byChapter = {},
     fallback = false,
     meta = {},
+    plan = [],
+    knowledge = null,
   } = input
   const out = []
   const rawTitle = String(courseTitle || '课程').trim().replace(/[_]+/g, ' ').replace(/\s+/g, ' ')
@@ -170,6 +173,8 @@ export function buildReport(input) {
   out.push('')
 
   out.push('## 一、课程目录')
+  const mindmapSection = renderMindmapSection({ courseTitle: rawTitle, chapters, plan, graph: knowledge ? { nodes: new Map((knowledge.concepts || []).map((c) => [c.id, c])) } : null })
+  if (mindmapSection) { out.push(mindmapSection); }
   out.push('')
   out.push(toc(chapters) || '（未识别到目录）')
   out.push('')

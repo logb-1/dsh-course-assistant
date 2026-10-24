@@ -441,3 +441,37 @@ window.__ModuleLoader__.load({id:"dsh-cost-meter", chunk:"client.codex.js", fact
 
 **仍待做**：插件应对「provider 无 key」做一次显式检测，直接提示"请在设置里选模型"，
 而不是 11 章各报一遍同样的错，再全部退回本地摘要。
+
+## 十六、2026-10-24 20:00 · 1.6.0 确定性调度 + 知识 DAG（BKT 暂缓）
+
+用户判断："调度太大程度依赖 LLM 自省重试"。数据核对（cost-meter 账本）显示 token 大头是
+`cacheRead`（10-23 单日 545 M，10-24 81 M），不是插件重试；但把调度确定性化对**可预测性/可测性**
+仍然正确，故按 P0/P1 落地，BKT（P4）按用户要求暂缓。
+
+### 新增模块（全部零依赖）
+
+| 文件 | 作用 |
+|---|---|
+| `core/graph.js` | 概念 DAG：加边时即时环检测、`topoOrder`、`validateEdges`（未知端点/自环/跨章反向/成环全拒）、`readiness` |
+| `core/schedule.js` | 失败分类（AUTH/EMPTY/BAD_JSON/RATE_LIMIT/NETWORK）+ 重试阶梯表 + `planChapters`（前置未满足则该章标 blocked）+ `describePlan` |
+| `core/knowledge.js` | 一次调用抽概念与前置候选（缓存键=章节标题+正文的 sha），模型只产候选，入库前过 `validateEdges` |
+| `core/mindmap.js` | 报告用思维导图：缩进树 + Mermaid `mindmap` 代码块，均从同一份 plan/graph 生成 |
+
+### 接线
+
+- `pipeline.js`：`summarizeWithRetry` 改为 **由 schedule 驱动**——AUTH 直接降级且**整个 job 只报一条**警告
+  （`authMissing` 标志让后续章节不再付费重试）；章节全部总结后构建知识图（缓存命中 0 次调用），
+  产出 `job.knowledge` / `job.plan`，并传进报告。
+- `report.js`：新增「## 前置知识路径」段落（树 + Mermaid + 前置未满足提示）。
+- `store.js`：`knowledge/` 目录 + `readKnowledge/writeKnowledge`。
+
+### 验证
+
+- 单测 **24 项**（新增 5：DAG 四种非法边、前置阻塞、AUTH 不重试/EMPTY 降级、mindmap 双形态、抽取提示约束）
+- `--real` 9 项仍全绿
+- 版本 1.6.0（未发布，npm 仍 1.5.2）
+
+### 下一步
+
+P2 job 级去重（同 sha+同参数 → 直接复用 job，0 次模型调用）+ 历史面板；P3 看板/独立 HTML；P4 BKT（暂缓）。
+启用方式：重启 DSH 或在 Plugins 页关/开插件。

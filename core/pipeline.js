@@ -17,6 +17,9 @@ import { summarizeChapter, summarizeCourse, mapLimit, localSummary, CHAPTER_PROM
 import { buildReport } from './report.js'
 import { assessQuality, describeQuality } from './quality.js'
 import { ocrPdf, ocrStatus } from './ocr.js'
+import { classifyError, planChapters, nextChapterAction, FAILURE } from './schedule.js'
+import { createGraph } from './graph.js'
+import { extractKnowledge } from './knowledge.js'
 import { detectDomain } from './domain.js'
 import { evaluateSummary, describeConfidence, pointText, pointEvidence, normalizeForMatch } from './verify.js'
 import { buildIndex, serializePassages } from './search.js'
@@ -100,26 +103,26 @@ export function applyAssessment({ summary, chapter, text, warnings }) {
  * The provider occasionally ends a concurrent stream with no text at all. One
  * quiet retry turns those into a normal summary instead of a local fallback.
  */
-async function summarizeWithRetry(args, attempts = 3) {
-  // Escalation ladder, not just "try again": a reasoning model that returns
-  // nothing has usually spent the whole budget, and a long chapter is what makes
-  // it do that. So attempt 2 raises maxTokens, attempt 3 raises it further *and*
-  // halves the input.
-  const ladder = [
-    {},
-    { maxTokens: 3600 },
-    { maxTokens: 5200, passageRatio: 0.5 },
-  ]
+async function summarizeWithRetry(args) {
+  // The retry policy lives in core/schedule.js: a table keyed by failure class,
+  // not a conversation. AUTH never retries (a missing key cannot fix itself),
+  // EMPTY escalates budget then shrinks the input, RATE_LIMIT backs off.
+  let attempt = 0
   let last = null
-  for (let i = 0; i < Math.min(attempts, ladder.length); i += 1) {
+  for (;;) {
+    const failure = last ? classifyError(last) : null
+    const decision = nextChapterAction({ attempts: attempt, failure })
+    if (decision.action === 'degrade') throw last
+    if (decision.delayMs) await new Promise((resolve) => setTimeout(resolve, decision.delayMs))
+    const extra = decision.action === 'retry' ? { maxTokens: decision.maxTokens, passageRatio: decision.passageRatio } : {}
     try {
-      return await summarizeChapter({ ...args, ...ladder[i] })
+      return await summarizeChapter({ ...args, ...extra })
     } catch (error) {
       last = error
-      if (i + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 500 * (i + 1)))
+      attempt += 1
+      if (classifyError(error) === FAILURE.AUTH) throw error
     }
   }
-  throw last
 }
 
 /* ------------------------- shared preparation step ------------------------- */
@@ -365,6 +368,9 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   /* ---------------- 3. summarize (search runs after, once the topic is known) ---------------- */
 
   let doneCount = 0
+  // set once when the provider has no usable key: the rest of the run must not
+  // keep paying for calls that cannot succeed
+  let authMissing = false
   const telemetry = { chapters: chapters.length, modelCalls: 0, cacheHits: 0, sourceChars: 0, keptChars: 0 }
   await mapLimit(
     chapters.map((chapter, i) => ({ chapter, text: texts[i] })),
@@ -372,7 +378,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     async ({ chapter, text }) => {
       let summary = null
       const cacheKey = summaryCacheKey(text, { provider: llm?.provider, model: llm?.model, domain })
-      if (useModel) {
+      if (useModel && !authMissing) {
         try {
           const cached = await store.cache.get(cacheKey)
           // clone: the assessment fields written below must never leak into the cache
@@ -397,7 +403,14 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
             await store.cache.set(cacheKey, structuredClone(summary), 30 * 86400 * 1000)
           } catch (error) {
             summary = { ...localSummary({ ...chapter, text }), error: error.message, offline: true }
-            warnings.push(`第 ${chapter.index} 章总结失败：${error.message}`)
+            const failure = classifyError(error)
+            if (failure === FAILURE.AUTH && !authMissing) {
+              // one clear sentence beats eleven identical per-chapter errors
+              authMissing = true
+              warnings.push('模型未配置：缺少可用 API Key，其余章节改用本地摘要（在设置里选好模型后重跑即可）')
+            } else if (!authMissing) {
+              warnings.push(`第 ${chapter.index} 章总结失败：${error.message}`)
+            }
           }
         }
       } else {
@@ -505,6 +518,41 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     job.series = series
     job.seriesLinks = seriesLinks
   }
+  /* ---------------- 3.8 knowledge graph → study plan ---------------- */
+  let knowledge = null
+  let plan = []
+  if (useModel && !authMissing && options?.knowledge !== false && chapters.length >= 2) {
+    push({ message: '构建知识点依赖图…', progress: 0.8 })
+    try {
+      const graphHash = createHash('sha256')
+        .update(chapters.map((c) => c.title).join('|'))
+        .update(texts.join('\n'))
+        .digest('hex')
+        .slice(0, 16)
+      const cached = store.readKnowledge?.(graphHash)
+      knowledge = cached || (await extractKnowledge({
+        llm,
+        provider: llm.provider,
+        model: llm.model,
+        courseTitle: outline.courseTitle,
+        chapters,
+        texts,
+        signal,
+        maxTokens: 2400,
+      }))
+      if (knowledge && !cached) store.writeKnowledge?.(graphHash, knowledge)
+      if (knowledge) {
+        const graph = createGraph(knowledge.concepts, knowledge.edges)
+        job.knowledge = { hash: graphHash, ...knowledge.stats }
+        job.plan = planChapters(chapters, graph, {}, 0.6)
+        plan = job.plan
+        telemetry.modelCalls += cached ? 0 : 1
+      }
+    } catch (error) {
+      warnings.push(`知识点依赖图构建失败：${error.message}`)
+    }
+  }
+
   push({ phase: 'summary', message: '生成全课程总结…', progress: 0.83 })
 
   /* ---------------- 4. course summary ---------------- */
@@ -541,6 +589,8 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     seriesLinks: job.seriesLinks,
     byChapter: job.byChapter,
     fallback: job.fallback,
+    plan,
+    knowledge,
     meta: {
       model: modelLabel,
       elapsedMs: job.elapsedMs,

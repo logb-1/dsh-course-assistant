@@ -41,6 +41,7 @@ export function createStore(dataDir) {
   const reportsDir = ensure(join(dataDir, 'reports'))
   const jobsDir = ensure(join(dataDir, 'jobs'))
   const ocrDir = ensure(join(dataDir, 'ocr'))
+  const knowledgeDir = ensure(join(dataDir, 'knowledge'))
   const cachePath = join(dataDir, 'cache.json')
   const uploadsIndexPath = join(uploadsDir, 'index.json')
 
@@ -81,6 +82,24 @@ export function createStore(dataDir) {
       } catch {}
     }, 500)
     saveTimer.unref?.()
+  }
+
+  function knowledgePath(hash) {
+    return join(knowledgeDir, `${String(hash).replace(/[^a-z0-9_-]/gi, '')}.json`)
+  }
+
+  function readKnowledge(hash) {
+    try {
+      return JSON.parse(readFileSync(knowledgePath(hash), 'utf8'))
+    } catch {
+      return null
+    }
+  }
+
+  function writeKnowledge(hash, value) {
+    try {
+      atomicWrite(knowledgePath(hash), JSON.stringify(value))
+    } catch {}
   }
 
   return {
@@ -267,7 +286,9 @@ export function createStore(dataDir) {
           .filter((n) => n.endsWith('.json'))
           .map((n) => {
             const p = join(jobsDir, n)
-            return { id: n.replace(/\.json$/, ''), mtime: statSync(p).mtimeMs }
+            return {
+    readKnowledge,
+    writeKnowledge, id: n.replace(/\.json$/, ''), mtime: statSync(p).mtimeMs }
           })
           .sort((a, b) => b.mtime - a.mtime)
           .slice(0, limit)

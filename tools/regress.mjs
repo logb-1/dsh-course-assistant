@@ -32,6 +32,10 @@ import { ask, buildIndex, indexFromPassages, search, serializePassages } from '.
 import { coverage, parseSyllabus } from '../core/coverage.js'
 import { bestPart, rankWithTopic } from '../core/bili.js'
 import { cleanKeywords, cleanTerm } from '../core/terms.js'
+import { addEdge, topoOrder, validateEdges } from '../core/graph.js'
+import { FAILURE, classifyError, nextChapterAction, planChapters } from '../core/schedule.js'
+import { mindmapMermaid, mindmapTree, renderMindmapSection } from '../core/mindmap.js'
+import { buildKnowledgePrompt } from '../core/knowledge.js'
 import { buildTopicProfile } from '../core/topic.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
@@ -485,6 +489,83 @@ check('B 站主题过滤：跑题视频全淘汰，对题视频保留', () => {
   assert(kept.relevance >= 0.5, `相关度 ${kept.relevance} 低于 0.5`)
   assert(ranked.every((v) => v.relevance >= 0.5), '低于 0.5 的视频不应进入结果')
   return `保留 ${ids.join(',')}，相关度 ${kept.relevance}`
+})
+
+check('知识 DAG：未知端点/自环/跨章反向/成环都会被拒绝', () => {
+  const concepts = [
+    { id: 'unsigned', name: '无符号整数', chapter: 2 },
+    { id: 'twos', name: '补码', chapter: 2 },
+    { id: 'float', name: '浮点数', chapter: 3 },
+  ]
+  const { graph, accepted, rejected } = validateEdges(
+    [
+      { from: 'unsigned', to: 'twos' },
+      { from: 'twos', to: 'float' },
+      { from: 'float', to: 'unsigned' },
+      { from: 'twos', to: 'twos' },
+      { from: 'ghost', to: 'twos' },
+    ],
+    concepts,
+  )
+  assert(accepted.length === 2, `应接受 2 条，实际 ${accepted.length}`)
+  const reasons = rejected.map((r) => r.reason).sort()
+  assert(reasons.includes('backward-chapter'), '跨章反向应被拒：' + reasons.join(','))
+  assert(reasons.includes('self-loop'), '自环应被拒')
+  assert(reasons.includes('unknown-from'), '未知端点应被拒')
+  assert(topoOrder(graph) !== null, '接受后的图必须无环')
+  assert(!addEdge(graph, { from: 'float', to: 'twos' }).ok, '成环的边必须拒绝')
+  return `接受 ${accepted.length} / 拒绝 ${rejected.length}`
+})
+
+check('知识 DAG：前置未掌握时章节被阻塞', () => {
+  const concepts = [
+    { id: 'unsigned', name: '无符号整数', chapter: 2 },
+    { id: 'twos', name: '补码', chapter: 2 },
+    { id: 'float', name: '浮点数', chapter: 3 },
+  ]
+  const { graph } = validateEdges([{ from: 'unsigned', to: 'twos' }, { from: 'twos', to: 'float' }], concepts)
+  const chapters = [{ index: 2, title: '数据表示' }, { index: 3, title: '浮点数' }]
+  const blockedPlan = planChapters(chapters, graph, {}, 0.6)
+  assert(blockedPlan.find((s) => s.index === 3).blocked, '第 3 章应因前置未满足被阻塞')
+  const readyPlan = planChapters(chapters, graph, { unsigned: 1, twos: 1 }, 0.6)
+  assert(!readyPlan.find((s) => s.index === 3).blocked, '前置满足后不应再阻塞')
+  return `阻塞 ${blockedPlan.filter((s) => s.blocked).length} 章`
+})
+
+check('确定性调度：AUTH 不重试，EMPTY 走阶梯后降级', () => {
+  assert(classifyError(new Error('llm-deepseek: no API key for provider route "deepseek-official"')) === FAILURE.AUTH, 'AUTH 分类')
+  assert(classifyError(new Error('模型没有返回内容')) === FAILURE.EMPTY, 'EMPTY 分类')
+  assert(classifyError(new Error('模型未返回可解析 JSON（前 120 字：…）')) === FAILURE.BAD_JSON, 'BAD_JSON 分类')
+  assert(nextChapterAction({ attempts: 0, failure: FAILURE.AUTH }).action === 'degrade', 'AUTH 必须直接降级')
+  assert(nextChapterAction({ attempts: 0, failure: FAILURE.EMPTY }).action === 'retry', 'EMPTY 第一次应重试')
+  const third = nextChapterAction({ attempts: 2, failure: FAILURE.EMPTY })
+  assert(third.action === 'degrade', 'EMPTY 第三次应降级，实际 ' + third.action)
+  return 'auth/degrade 正确'
+})
+
+check('思维导图：树与 Mermaid 都能从同一份数据生成', () => {
+  const chapters = [{ index: 1, title: '概述' }, { index: 2, title: '数据表示' }]
+  const plan = [{ index: 2, blocked: true, missing: ['twos'] }]
+  const tree = mindmapTree({ courseTitle: '计算机系统基础', chapters, plan })
+  const mermaid = mindmapMermaid({ courseTitle: '计算机系统基础', chapters, plan })
+  assert(tree.includes('第2章') && tree.includes('⚠'), '树里应标出被阻塞的章')
+  assert(mermaid.startsWith('mindmap'), 'Mermaid 必须以 mindmap 开头')
+  assert(mermaid.includes('数据表示'), 'Mermaid 应包含章名')
+  const section = renderMindmapSection({ courseTitle: '计算机系统基础', chapters, plan })
+  assert(section.includes('前置知识路径') && section.includes('mermaid'), '报告段落应含标题与代码块')
+  return 'tree + mermaid ok'
+})
+
+check('知识点抽取提示：只允许引用已列出的概念', () => {
+  const prompt = buildKnowledgePrompt({
+    courseTitle: '计算机系统基础',
+    chapters: [{ index: 1, title: '概述' }, { index: 2, title: '数据表示' }],
+    texts: ['第一章讲体系结构', '第二章讲补码'],
+  })
+  assert(prompt.includes('第2章 数据表示'), '提示里要有章名')
+  assert(prompt.includes('不能新造 id'), '必须禁止模型自造 id')
+  assert(prompt.includes('前面的章 → 后面的章'), '必须限制跨章方向')
+  return 'prompt ok'
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */
