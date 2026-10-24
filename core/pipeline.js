@@ -100,16 +100,23 @@ export function applyAssessment({ summary, chapter, text, warnings }) {
  * The provider occasionally ends a concurrent stream with no text at all. One
  * quiet retry turns those into a normal summary instead of a local fallback.
  */
-async function summarizeWithRetry(args, attempts = 2) {
+async function summarizeWithRetry(args, attempts = 3) {
+  // Escalation ladder, not just "try again": a reasoning model that returns
+  // nothing has usually spent the whole budget, and a long chapter is what makes
+  // it do that. So attempt 2 raises maxTokens, attempt 3 raises it further *and*
+  // halves the input.
+  const ladder = [
+    {},
+    { maxTokens: 3600 },
+    { maxTokens: 5200, passageRatio: 0.5 },
+  ]
   let last = null
-  for (let i = 0; i < attempts; i += 1) {
+  for (let i = 0; i < Math.min(attempts, ladder.length); i += 1) {
     try {
-      // the second attempt gets a larger budget: an empty reply usually means the
-      // reasoning trace ate maxTokens
-      return await summarizeChapter(i === 0 ? args : { ...args, maxTokens: 3600 })
+      return await summarizeChapter({ ...args, ...ladder[i] })
     } catch (error) {
       last = error
-      if (i + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 400 * (i + 1)))
+      if (i + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 500 * (i + 1)))
     }
   }
   throw last

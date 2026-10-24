@@ -144,7 +144,9 @@ export function buildReport(input) {
   const out = []
   const rawTitle = String(courseTitle || '课程').trim().replace(/[_]+/g, ' ').replace(/\s+/g, ' ')
   const bareTitle = /^《[^》]*》$/.test(rawTitle) ? rawTitle.slice(1, -1) : rawTitle
-  out.push(`# 《${bareTitle}》学习报告`)
+  // a title that already carries 《》 (`《计算机系统基础》复习大纲`) must not be
+  // wrapped again — it produced "《《计算机系统基础》复习大纲》"
+  out.push(rawTitle.includes('《') ? `# ${rawTitle}学习报告` : `# 《${bareTitle}》学习报告`)
   out.push('')
   const sourceLine = files.map((f) => `${f.name}（${f.kind}${f.pages ? `，${f.pages} 页` : ''}）`).join('、')
   const bits = [

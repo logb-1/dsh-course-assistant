@@ -231,7 +231,7 @@ export function truncate(text, max = MAX_CHAPTER_CHARS) {
   return selectPassages(text, max)
 }
 
-export async function summarizeChapter({ llm, provider, model, courseTitle, chapter, text, outline, domain, signal, maxTokens }) {
+export async function summarizeChapter({ llm, provider, model, courseTitle, chapter, text, outline, domain, signal, maxTokens, passageRatio = 1 }) {
   // `chapter` is metadata only: the body must be passed explicitly, otherwise the
   // model summarises a title and every evidence quote fails to match.
   const source = String(text ?? chapter.text ?? '')
@@ -241,7 +241,9 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
         .map((t, i) => `${i + 1}.${t}`)
         .join(' ')}`
     : ''
-  const body = truncate(source)
+  // A retry can shrink the input as well as raise the budget: a long chapter is
+  // what makes a reasoning model return nothing at all.
+  const body = truncate(source, Math.max(600, Math.round(MAX_CHAPTER_CHARS * passageRatio)))
   const prompt = [
     `课程名：${courseTitle}`,
     domain ? `课程领域：${domain.name}（本章 keywords 必须以「${domain.name}」开头）` : '',
