@@ -526,3 +526,7 @@ P2 job 级去重（同 sha+同参数 → 直接复用 job，0 次模型调用）
 **仍然阻塞**：`git push` 报 `Failed to connect to github.com:443`（当时 `api.github.com` 与
 `registry.npmjs.org` 都可达，只有 git 的 443 不通）。本地积压：插件 8 个提交、bench 2 个提交。
 网络恢复后执行 `git push origin main`（两个仓库），CI 应随之转绿。
+
+**发布**：1.6.0 已发 npm（`latest=1.6.0`，CDN 延迟约 1 分钟）；tag `v1.6.0` 已推（指向 `ae359cd`）。
+发布物已下载核对：38 个条目 / 121 KB，`core/graph|schedule|knowledge|mindmap|dashboard.js` 全部在包内。
+交付顺序：CI 转绿（ae359cd）→ 发布 → 验证 registry → 打 tag。
