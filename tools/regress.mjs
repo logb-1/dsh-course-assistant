@@ -658,6 +658,24 @@ check('知识图兜底：模型空回包时按章节顺序生成前置链', () =
   return `${graph.stats.concepts} 概念 / ${graph.stats.accepted} 边`
 })
 
+check('历史记录：写入、去重、最新优先', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ca-history-'))
+  try {
+    const store = createStore(dir)
+    store.rememberHistory({ id: 'a', courseTitle: 'A', createdAt: '2026-10-01T00:00:00.000Z', chapters: [{}, {}], files: [{ name: 'a.pdf' }] })
+    store.rememberHistory({ id: 'b', courseTitle: 'B', createdAt: '2026-10-02T00:00:00.000Z', chapters: [{}] })
+    store.rememberHistory({ id: 'a', courseTitle: 'A2', createdAt: '2026-10-03T00:00:00.000Z', chapters: [{}] })
+    const list = store.listHistory()
+    assert(list.length === 2, `同 id 写入应更新而非追加，实际 ${list.length}`)
+    assert(list[0].id === 'a' && list[0].courseTitle === 'A2', '重复写入应更新内容并置顶')
+    assert(list[1].id === 'b', '较早的条目应排在后面')
+    assert(store.listHistory(1).length === 1, 'limit 应生效')
+    return `${list.length} 条 / 首条 ${list[0].courseTitle}`
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */
 
 function makePdf(ops) {

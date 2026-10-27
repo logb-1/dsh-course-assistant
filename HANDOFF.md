@@ -530,3 +530,19 @@ P2 job 级去重（同 sha+同参数 → 直接复用 job，0 次模型调用）
 **发布**：1.6.0 已发 npm（`latest=1.6.0`，CDN 延迟约 1 分钟）；tag `v1.6.0` 已推（指向 `ae359cd`）。
 发布物已下载核对：38 个条目 / 121 KB，`core/graph|schedule|knowledge|mindmap|dashboard.js` 全部在包内。
 交付顺序：CI 转绿（ae359cd）→ 发布 → 验证 registry → 打 tag。
+
+## 十八、2026-10-27 晚 · 历史面板 UI（1.6.1）
+
+**新增**
+- `core/store.js`：`history.json`（最近 100 条）+ `rememberHistory / listHistory`；完成 job 时由 pipeline 写入。
+- `index.js`：`GET /course-assistant/history?limit=20`。
+- `client.js`：标题栏「历史」按钮 → 下拉列表（课程名、章数、时间、打开）；点「打开」走与实时任务相同的渲染路径。
+
+**顺手挖出一个导致 1.6.0 两个特性静默失效的 bug**
+前几次给 store 加方法时，插入点被 `lastIndexOf('  return {')` 命中到 `listJobs` 里的
+map 回调，于是 `findReusableJob / rememberJobKey / readKnowledge / writeKnowledge` 全被塞进了
+`listJobs` 的返回对象里——而公开 API 上根本没有这些方法。因为调用处都写了 `?.`，
+**去重和知识图缓存从 1.6.0 起一直静默失效**。现已恢复到正确位置，并用单测断言
+`store.rememberHistory is not a function` 这类问题会立刻红。
+
+**验证**：`--unit` 29 项（新增历史记录写入/去重/最新优先）、`--real` 9 项、client 契约全绿。

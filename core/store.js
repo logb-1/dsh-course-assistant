@@ -41,6 +41,7 @@ export function createStore(dataDir) {
   const reportsDir = ensure(join(dataDir, 'reports'))
   const jobsDir = ensure(join(dataDir, 'jobs'))
   const jobIndexPath = join(jobsDir, 'index.json')
+  const historyPath = join(dataDir, 'history.json')
   const ocrDir = ensure(join(dataDir, 'ocr'))
   const knowledgeDir = ensure(join(dataDir, 'knowledge'))
   const cachePath = join(dataDir, 'cache.json')
@@ -103,6 +104,39 @@ export function createStore(dataDir) {
     } catch {}
   }
 
+  function readHistory() {
+    try {
+      const list = JSON.parse(readFileSync(historyPath, 'utf8'))
+      return Array.isArray(list) ? list : []
+    } catch {
+      return []
+    }
+  }
+
+  /** Append a finished job to the "recent" list the panel shows. */
+  function rememberHistory(job) {
+    if (!job?.id) return
+    try {
+      const entry = {
+        id: job.id,
+        courseTitle: job.courseTitle || '未命名课程',
+        createdAt: job.createdAt || new Date().toISOString(),
+        chapters: Array.isArray(job.chapters) ? job.chapters.length : 0,
+        files: (job.files || []).map((file) => file?.name).filter(Boolean).slice(0, 3),
+        reportPath: job.reportPath || '',
+        dashboardPath: job.dashboardPath || '',
+        status: 'done',
+      }
+      const list = readHistory().filter((item) => item.id !== entry.id)
+      list.unshift(entry)
+      atomicWrite(historyPath, JSON.stringify(list.slice(0, 100)))
+    } catch {}
+  }
+
+  function listHistory(limit = 20) {
+    return readHistory().slice(0, Math.max(1, Math.min(100, Number(limit) || 20)))
+  }
+
   function readJobIndex() {
     try {
       return JSON.parse(readFileSync(jobIndexPath, 'utf8'))
@@ -144,6 +178,13 @@ export function createStore(dataDir) {
   }
 
   return {
+    rememberHistory,
+    listHistory,
+    findReusableJob,
+    rememberJobKey,
+    forgetJobKey,
+    readKnowledge,
+    writeKnowledge,
     dataDir,
     uploadsDir,
     reportsDir,
@@ -328,11 +369,9 @@ export function createStore(dataDir) {
           .map((n) => {
             const p = join(jobsDir, n)
             return {
-    findReusableJob,
-    rememberJobKey,
-    forgetJobKey,
-    readKnowledge,
-    writeKnowledge, id: n.replace(/\.json$/, ''), mtime: statSync(p).mtimeMs }
+              id: n.replace(/\.json$/, ''),
+              mtime: statSync(p).mtimeMs,
+            }
           })
           .sort((a, b) => b.mtime - a.mtime)
           .slice(0, limit)

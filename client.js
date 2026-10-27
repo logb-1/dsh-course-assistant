@@ -562,6 +562,8 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
       const [error, setError] = useState('')
       const [tab, setTab] = useState('points')
       const [report, setReport] = useState('')
+      const [history, setHistory] = useState([])
+      const [historyOpen, setHistoryOpen] = useState(false)
       const [health, setHealth] = useState(null)
       const timer = useRef(null)
 
@@ -638,6 +640,35 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
             setError(String(e.message || e))
           }
         }, 900)
+      }, [])
+
+      const loadHistory = useCallback(async () => {
+        try {
+          const res = await fetch(`${ROUTE}/history?limit=20`, { credentials: 'same-origin' })
+          const data = await res.json()
+          if (data.ok) setHistory(data.jobs || [])
+        } catch {}
+      }, [])
+
+      // Open a finished job from the history list: same rendering path as a live
+      // job, so nothing about the points/report tabs changes.
+      const openJob = useCallback(async (id) => {
+        setHistoryOpen(false)
+        setError('')
+        try {
+          const res = await fetch(`${ROUTE}/job?id=${encodeURIComponent(id)}`, { credentials: 'same-origin' })
+          const data = await res.json()
+          if (!data.ok) throw new Error(data.reason || '读取历史任务失败')
+          setJob(data.job)
+          setPhase(data.job.status === 'done' ? 'done' : 'running')
+          setTab('report')
+          if (data.job.status === 'done') {
+            const r = await fetch(`${ROUTE}/report?id=${encodeURIComponent(id)}&format=md`, { credentials: 'same-origin' })
+            setReport(r.ok ? await r.text() : '')
+          }
+        } catch (e) {
+          setError(String(e.message || e))
+        }
       }, [])
 
       const start = async () => {
@@ -731,8 +762,65 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
           h('span', { className: 'ca-sp' }),
           health && !health.llm ? h('span', { className: 'ca-tag warn' }, '模型不可用：将用本地兜底摘要') : null,
           health && !health.pdf ? h('span', { className: 'ca-tag' }, 'PDF 导出不可用') : null,
+          h(
+            'button',
+            {
+              className: 'ca-btn small',
+              onClick: () => {
+                setHistoryOpen((open) => !open)
+                loadHistory()
+              },
+            },
+            `历史${history.length ? `（${history.length}）` : ''}`,
+          ),
           h('button', { className: 'ca-btn small', onClick: reset, disabled: busy }, '清空'),
         ),
+        historyOpen
+          ? h(
+              'div',
+              {
+                style: {
+                  border: '1px solid #e5e7eb',
+                  borderRadius: 10,
+                  margin: '0 14px 12px',
+                  padding: '6px 8px',
+                  maxHeight: 260,
+                  overflow: 'auto',
+                  background: '#fff',
+                },
+              },
+              history.length
+                ? history.map((entry) =>
+                    h(
+                      'div',
+                      {
+                        key: entry.id,
+                        style: {
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '6px 4px',
+                          borderBottom: '1px solid #f1f2f4',
+                          fontSize: 12,
+                        },
+                      },
+                      h('span', { style: { fontWeight: 600, flex: '1 1 auto' } }, entry.courseTitle || entry.id),
+                      h('span', { style: { color: '#6b7280' } }, `${entry.chapters || 0} 章`),
+                      h(
+                        'span',
+                        { style: { color: '#9ca3af' } },
+                        String(entry.createdAt || '').slice(0, 16).replace('T', ' '),
+                      ),
+                      h(
+                        'button',
+                        { className: 'ca-btn small', onClick: () => openJob(entry.id) },
+                        '打开',
+                      ),
+                    ),
+                  )
+                : h('div', { className: 'ca-empty', style: { padding: '10px 4px' } }, '还没有历史记录'),
+            )
+          : null,
         h(
           'div',
           { className: 'ca-body' },

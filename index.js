@@ -468,6 +468,11 @@ export function apply(ctx, config = {}) {
         })
       }
 
+      if (path === `${ROUTE}/history`) {
+        const limit = Number(url.searchParams.get('limit')) || 20
+        return send(res, 200, { ok: true, jobs: store.listHistory?.(limit) || [] })
+      }
+
       if (path === `${ROUTE}/upload` && req.method === 'POST') {
         const rawName = url.searchParams.get('name') || 'file'
         const name = basename(decodeURIComponent(rawName))

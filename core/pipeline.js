@@ -675,6 +675,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   try {
     store.saveSearchIndex?.(id, serializePassages(buildIndex(chapters, texts)))
   } catch {}
+  store.rememberHistory?.(job)
   store.rememberJobKey?.(dedupeKey, job.id)
   push({
     status: 'done',
