@@ -501,3 +501,28 @@ P2 job 级去重（同 sha+同参数 → 直接复用 job，0 次模型调用）
 2. **章名重复编号**：大纲章名自带「第 2 章 数据的机器级表示」，mindmap 又加前缀 →「第1章 第 2 章 …」。
    修复：`mindmap.js#bareTitle()` 剥掉已有的「第 N 章」。
 3. 顺带：`## 前置知识路径` 从「课程目录」中间移到目录之后，成为独立段落。
+
+## 十七、2026-10-27 · 日常维护
+
+**体检结果**：仓库工作区干净；`--unit` 28 项、`--real` 9 项、client 契约全绿；插件在宿主上 `v1.6.0` 正常；npm `latest` 仍 1.5.2（1.6.0 未发）。
+
+**发现：CI 连红 5 次（自 2026-10-23 起，每次都是同一对原因）**
+
+1. `unit` 任务 `ERR_MODULE_NOT_FOUND: schemastery`（windows + ubuntu 都红）
+   - 根因：1.4.0 引入 `schemastery` 依赖后，`tools/regress.mjs` 会 `import '../index.js'`，
+     而 CI 仍按"零安装"设计跑（不装任何依赖）→ 加载失败。
+   - 修复：unit 任务加一步 `npm install --no-save --no-audit --no-fund schemastery@^3.18.0`，
+     并同步更新 workflow 顶部注释（不再是零安装）。
+2. `package` 任务 `health reports a hardcoded version`
+   - 根因：CI 的闸门是 `grep -n "version: '" index.js`，而 `PKG` 的 catch 分支里写着
+     `return { version: '0.0.0' }`（单引号字面量）→ 被判成硬编码。
+   - 修复：catch 分支改 `String(0)`，两处 health 输出改 `PKG.version || 'unknown'`；
+     现在 `grep "version: '"` 命中 0 次。
+
+**验证方式（不依赖 CI）**：`git clone --local --depth 1` 出干净副本 → 装 schemastery →
+`--unit` 28/28、client 契约 PASS、version 闸门 0 命中；`pnpm pack` 产物 38 个条目 121 KB，
+`core/graph.js|schedule.js|knowledge.js|mindmap.js|dashboard.js` 全部在包里。
+
+**仍然阻塞**：`git push` 报 `Failed to connect to github.com:443`（当时 `api.github.com` 与
+`registry.npmjs.org` 都可达，只有 git 的 443 不通）。本地积压：插件 8 个提交、bench 2 个提交。
+网络恢复后执行 `git push origin main`（两个仓库），CI 应随之转绿。
