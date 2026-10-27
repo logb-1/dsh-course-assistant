@@ -1,8 +1,8 @@
 name: ci
 
-# Zero-install gate: the unit suite and the client contract test are pure Node,
-# so they run on a stock runner without pnpm or a lockfile. The package job also
-# avoids installing anything (npm pack does not need the dependencies).
+# One dependency is installed (schemastery, for the Config schema); everything
+# else still runs on a stock runner without pnpm or a lockfile. The package job
+# installs nothing (npm pack does not need the dependencies).
 on:
   push:
     branches: [main]
@@ -23,6 +23,11 @@ jobs:
           node-version: 22
       - name: Syntax
         run: node --check index.js && node --check client.js
+      # index.js imports schemastery for the Config schema, so the job is no
+      # longer install-free. Install just that dependency (no lockfile in the
+      # repo, so `npm ci` is not an option).
+      - name: Install the runtime dependency
+        run: npm install --no-save --no-audit --no-fund schemastery@^3.18.0
       - name: Unit regressions (synthetic fixtures only)
         run: node tools/regress.mjs --unit --strict
       - name: Client loader contract

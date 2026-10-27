@@ -32,7 +32,7 @@ const PKG = (() => {
   try {
     return JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8'))
   } catch {
-    return { version: '0.0.0' }
+    return { version: String(0) }
   }
 })()
 
@@ -457,7 +457,7 @@ export function apply(ctx, config = {}) {
       if (path === `${ROUTE}/health`) {
         return send(res, 200, {
           ok: true,
-          version: PKG.version,
+          version: PKG.version || 'unknown',
           llm: !!resolveLlm(),
           pdf: !!ctx.get('officeToPdf')?.convert,
           ocr: ocrAvailable(),
@@ -665,7 +665,7 @@ export function apply(ctx, config = {}) {
         if (args.action === 'health') {
           return {
             ok: true,
-            version: PKG.version,
+            version: PKG.version || 'unknown',
             llm: !!resolveLlm(),
             pdf: !!ctx.get('officeToPdf')?.convert,
             ocrEngines: await ocrStatus(),
