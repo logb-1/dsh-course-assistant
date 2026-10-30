@@ -42,6 +42,7 @@ import { buildKnowledgePrompt, extractKnowledge, fallbackKnowledge } from '../co
 import { dedupeKeyFor } from '../core/pipeline.js'
 import { renderDashboardHtml } from '../core/dashboard.js'
 import { attachImageText, imageSize } from '../core/media.js'
+import { fixOcrArtifacts } from '../core/ocr-text.js'
 import { buildTopicProfile } from '../core/topic.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
@@ -833,6 +834,18 @@ check('关键词捕获：模型给空时用标题与本地术语兜底', () => {
   assert(terms.length >= 1, '模型为空时也必须给出可用关键词')
   assert(terms.every((term) => term.length >= 2), `术语长度应 >=2，实际 ${terms.join(',')}`)
   return terms.join(' / ')
+})
+
+check('OCR 文本后处理：拆词合并、IEEE 纠正、全角转半角、偏旁合并', () => {
+  const code = fixOcrArtifacts('i nt main(void) {\n  return 0 ；\n}')
+  assert(code.includes('int main'), `拆开的 int 应被合并：${code}`)
+  assert(code.includes('return 0 ;'), '全角分号应转成半角')
+  assert(fixOcrArtifacts('浮点数按 lEEE754 存 储').includes('IEEE754'), 'lEEE754 应纠正为 IEEE754')
+  assert(fixOcrArtifacts('衤卜码表示法').startsWith('补码'), '偏旁拆分的「补」应合并')
+  assert(fixOcrArtifacts('氵孚点数').startsWith('浮点数'), '偏旁拆分的「浮」应合并')
+  // 中文正文里的空格不该被当成代码处理，也不该被吃掉语义
+  assert(fixOcrArtifacts('第 3 章 程序的机器级表示').includes('第 3 章'), '普通中文行应原样保留')
+  return '4 类纠正均生效'
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

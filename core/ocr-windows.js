@@ -100,10 +100,12 @@ function recognize(pdfPath, options = {}) {
 }
 
 
-function recognizeImage(imagePath) {
+function recognizeImage(imagePath, options = {}) {
   const native = String(imagePath).replace(/\//g, '\\')
   return new Promise((resolve, reject) => {
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT, '-Image', native], {
+    const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT, '-Image', native]
+    if (options?.preprocess === false) args.push('-NoPreprocess')
+    const child = spawn('powershell.exe', args, {
       windowsHide: true,
     })
     let buffer = ''

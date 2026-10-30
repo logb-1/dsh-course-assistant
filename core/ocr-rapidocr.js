@@ -44,6 +44,10 @@ function probe(options = {}) {
   return probing
 }
 
+function recognizeImage(imagePath, options = {}) {
+  return spawnPython(['--image', imagePath], options)
+}
+
 function recognize(pdfPath, options = {}) {
   const maxPages = Math.max(1, Math.min(400, options.maxPages || 60))
   const args = [
@@ -118,4 +122,5 @@ export default {
   availableSync: () => probed === true,
   probe,
   recognize,
+  recognizeImage,
 }

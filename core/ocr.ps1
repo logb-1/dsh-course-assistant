@@ -2,6 +2,7 @@ param(
   [string]$Pdf = '',
   [string]$OutDir = '',
   [string]$Image = '',
+  [switch]$NoPreprocess,
   [int]$First = 0,
   [int]$Last = -1,
   [int]$Width = 1600
@@ -43,7 +44,77 @@ if (-not $engine) {
 }
 
 if ($Image) {
-  $imgFile = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Image)) ([Windows.Storage.StorageFile])
+  # Slide pictures are small and often dark-themed. Windows OCR reads a flat,
+  # light, upscaled bitmap far better than the raw screenshot, so preprocess
+  # before handing it to WinRT. -NoPreprocess keeps the old behaviour for A/B.
+  $target = $Image
+  $tempFile = $null
+  if (-not $NoPreprocess) {
+    try {
+      Add-Type -AssemblyName System.Drawing
+      $src = [System.Drawing.Image]::FromFile($Image)
+      $minSide = [Math]::Min($src.Width, $src.Height)
+      $scale = 1.0
+      if ($minSide -gt 0 -and $minSide -lt 500) { $scale = [Math]::Min(2.5, 800.0 / $minSide) }
+      $newW = [int]([Math]::Min(2600, [Math]::Round($src.Width * $scale)))
+      $newH = [int]([Math]::Min(2600, [Math]::Round($src.Height * $scale)))
+      if ($newW -lt 1) { $newW = 1 }
+      if ($newH -lt 1) { $newH = 1 }
+
+      # brightness from a 32x32 thumbnail: per-pixel loops on full images are slow
+      $thumb = New-Object System.Drawing.Bitmap 32, 32
+      $tg = [System.Drawing.Graphics]::FromImage($thumb)
+      $tg.DrawImage($src, 0, 0, 32, 32)
+      $sum = 0.0
+      for ($y = 0; $y -lt 32; $y++) {
+        for ($x = 0; $x -lt 32; $x++) {
+          $c = $thumb.GetPixel($x, $y)
+          $sum += (0.299 * $c.R + 0.587 * $c.G + 0.114 * $c.B)
+        }
+      }
+      $mean = $sum / 1024.0
+      $tg.Dispose()
+      $thumb.Dispose()
+
+      $cm = New-Object System.Drawing.Imaging.ColorMatrix
+      $dark = ($mean -lt 100)
+      if ($dark) {
+        # dark slide: grayscale then invert, Windows OCR reads light-on-dark badly
+        $cm.Matrix00 = -0.299
+        $cm.Matrix01 = -0.299
+        $cm.Matrix02 = -0.299
+        $cm.Matrix10 = -0.587
+        $cm.Matrix11 = -0.587
+        $cm.Matrix12 = -0.587
+        $cm.Matrix20 = -0.114
+        $cm.Matrix21 = -0.114
+        $cm.Matrix22 = -0.114
+        $cm.Matrix40 = 1.0
+        $cm.Matrix41 = 1.0
+        $cm.Matrix42 = 1.0
+      }
+      $cm.Matrix33 = 1.0
+      $attrs = New-Object System.Drawing.Imaging.ImageAttributes
+      $attrs.SetColorMatrix($cm)
+
+      $bmp = New-Object System.Drawing.Bitmap $newW, $newH
+      $g = [System.Drawing.Graphics]::FromImage($bmp)
+      $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+      $rect = New-Object System.Drawing.Rectangle 0, 0, $newW, $newH
+      $g.DrawImage($src, $rect, 0, 0, $src.Width, $src.Height, [System.Drawing.GraphicsUnit]::Pixel, $attrs)
+      $g.Dispose()
+      $tempFile = Join-Path $env:TEMP ("ocr-pre-" + [guid]::NewGuid().ToString("N") + ".png")
+      $bmp.Save($tempFile, [System.Drawing.Imaging.ImageFormat]::Png)
+      $bmp.Dispose()
+      $src.Dispose()
+      $target = $tempFile
+      Write-Output (ConvertTo-Json @{ preprocess = @{ scale = $scale; mean = [int]$mean; inverted = $dark } } -Compress)
+    } catch {
+      $target = $Image
+    }
+  }
+
+  $imgFile = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($target)) ([Windows.Storage.StorageFile])
   $imgStream = Await ($imgFile.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
   $imgDecoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($imgStream)) ([Windows.Graphics.Imaging.BitmapDecoder])
   $imgBitmap = Await ($imgDecoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
@@ -51,6 +122,7 @@ if ($Image) {
   $imgText = ($imgResult.Lines | ForEach-Object { $_.Text }) -join "`n"
   Write-Output (ConvertTo-Json @{ page = 1; text = $imgText } -Compress)
   $imgStream.Dispose()
+  if ($tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
   exit 0
 }
 if (-not $Pdf) {

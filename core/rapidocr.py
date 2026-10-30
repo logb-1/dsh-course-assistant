@@ -24,7 +24,8 @@ def emit(obj):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pdf", required=True)
+    parser.add_argument("--pdf", default="")
+    parser.add_argument("--image", default="")
     parser.add_argument("--first", type=int, default=0)
     parser.add_argument("--last", type=int, default=-1)
     parser.add_argument("--dpi", type=int, default=190)
@@ -42,15 +43,23 @@ def main():
         emit({"error": "missing-rapidocr (pip install rapidocr_onnxruntime)"})
         return 3
 
+    source = args.image or args.pdf
+    if not source:
+        emit({"error": "no-input"})
+        return 4
     try:
-        doc = fitz.open(args.pdf)
+        doc = fitz.open(source)
     except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
         emit({"error": "cannot-open-pdf: %s" % exc})
         return 3
 
     total = len(doc)
-    last = args.last if 0 <= args.last < total else total - 1
-    first = max(0, min(args.first, last))
+    if args.image:
+        first = 0
+        last = 0
+    else:
+        last = args.last if 0 <= args.last < total else total - 1
+        first = max(0, min(args.first, last))
     emit({"pageCount": total, "first": first, "last": last})
 
     try:

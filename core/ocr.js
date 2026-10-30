@@ -16,6 +16,7 @@
  */
 import windowsEngine from './ocr-windows.js'
 import rapidocrEngine from './ocr-rapidocr.js'
+import { fixOcrArtifacts } from './ocr-text.js'
 
 const engines = new Map()
 
@@ -90,7 +91,7 @@ export async function ocrImage(imagePath, options = {}) {
   if (!engine) throw new Error('没有可用的 OCR 引擎')
   if (typeof engine.recognizeImage !== 'function') throw new Error(`OCR 引擎 ${engine.id} 不支持图片`)
   const text = await engine.recognizeImage(imagePath, options)
-  return normalizeOcrText(text || '')
+  return fixOcrArtifacts(text || '')
 }
 
 export function normalizeOcrText(text) {
