@@ -34,6 +34,7 @@ import { ask, buildIndex, indexFromPassages, search, serializePassages } from '.
 import { coverage, parseSyllabus } from '../core/coverage.js'
 import { bestPart, rankWithTopic } from '../core/bili.js'
 import { cleanKeywords, cleanTerm } from '../core/terms.js'
+import { extractKeywords } from '../core/keywords.js'
 import { addEdge, topoOrder, validateEdges } from '../core/graph.js'
 import { FAILURE, classifyError, nextChapterAction, planChapters } from '../core/schedule.js'
 import { mindmapMermaid, mindmapTree, renderMindmapSection } from '../core/mindmap.js'
@@ -797,6 +798,41 @@ check('thorough：逐节调用模型并合并去重', async () => {
   assert(result.key_points.length >= 2, `合并后应至少 2 条要点，实际 ${result.key_points.length}`)
   assert(result.key_points.length <= 12, '合并后要点不应超过 12 条')
   return `${calls} 次调用 / ${result.key_points.length} 条要点`
+})
+
+check('关键词捕获：多源融合、通用词丢弃、父子术语不重复', () => {
+  const chapter = { title: '第 2 章 数据的机器级表示', subs: ['一、有符号整数'] }
+  const text = '补码表示法把减法变成加法。IEEE754 规定浮点格式。ASCII 用七位编码。x86-64 的调用约定不同。'
+  const picked = extractKeywords({
+    chapter,
+    text,
+    corpus: ['浮点数按 IEEE754 存储。', '字符编码包括 ASCII 与 Unicode。'],
+    modelKeywords: ['主要内容', '计算机系统 补码'],
+    limit: 4,
+  })
+  const terms = picked.map((item) => item.term)
+  assert(picked.length >= 2 && picked.length <= 4, `关键词数应为 2-4，实际 ${picked.length}`)
+  assert(!terms.includes('主要内容'), '通用词必须被丢弃')
+  assert(terms.some((term) => term.includes('补码')), '补码应被捕获')
+  assert(terms.some((term) => /IEEE754|ASCII|x86/.test(term)), '英文缩写应被捕获')
+  assert(!(terms.includes('计算机系统 补码') && terms.includes('补码')), '父子术语不应同时出现')
+  const sources = new Set(picked.map((item) => item.source))
+  assert(sources.size >= 2, `应来自多个来源，实际 ${[...sources].join(',')}`)
+  return terms.join(' / ')
+})
+
+check('关键词捕获：模型给空时用标题与本地术语兜底', () => {
+  const picked = extractKeywords({
+    chapter: { title: '异常与中断', subs: ['中断处理'] },
+    text: '异常是内部事件，中断是外部事件。响应过程包括保存现场与恢复现场。',
+    corpus: [],
+    modelKeywords: [],
+    limit: 3,
+  })
+  const terms = picked.map((item) => item.term)
+  assert(terms.length >= 1, '模型为空时也必须给出可用关键词')
+  assert(terms.every((term) => term.length >= 2), `术语长度应 >=2，实际 ${terms.join(',')}`)
+  return terms.join(' / ')
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

@@ -28,7 +28,8 @@ import { detectDomain } from './domain.js'
 import { evaluateSummary, describeConfidence, pointText, pointEvidence, normalizeForMatch } from './verify.js'
 import { buildIndex, serializePassages } from './search.js'
 import { buildTopicProfile } from './topic.js'
-import { cleanKeywords, topTermsFor } from './terms.js'
+import { cleanKeywords } from './terms.js'
+import { extractKeywords } from './keywords.js'
 
 /** Content-addressed OCR cache: reruns reuse the first run's pages byte-for-byte. */
 export function ocrCachePath(store, pdfPath, options = {}) {
@@ -528,16 +529,23 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   )
 
   /* ---------------- 3.5 topic profile + Bilibili search ---------------- */
-  // generic page headers ("主要内容") must never become search words
+  // Keywords come from four sources now: the model, the headings, local TF-IDF
+  // over this chapter, and acronyms. Generic page headers are filtered by
+  // cleanTerm, so 「主要内容」 can never become a search word.
   for (let i = 0; i < chapters.length; i += 1) {
     const chapter = chapters[i]
-    const cleaned = cleanKeywords(chapter.summary?.keywords || [], 4)
-    if (cleaned.length) {
-      chapter.summary.keywords = cleaned
-    } else {
-      const terms = topTermsFor(texts[i] || '', texts, 3)
-      chapter.summary.keywords = terms.length ? terms : cleaned
-    }
+    const picked = extractKeywords({
+      chapter,
+      text: texts[i] || '',
+      corpus: texts.filter((_, index) => index !== i),
+      modelKeywords: chapter.summary?.keywords || [],
+      limit: 4,
+    })
+    chapter.summary.keywords = picked.map((item) => item.term)
+    chapter.keywordSources = picked.reduce((acc, item) => {
+      acc[item.source] = (acc[item.source] || 0) + 1
+      return acc
+    }, {})
   }
   const allKeywords = chapters.flatMap((c) => c.summary?.keywords || [])
   const topic = buildTopicProfile({
