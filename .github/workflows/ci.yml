@@ -32,6 +32,8 @@ jobs:
         run: node tools/regress.mjs --unit --strict
       - name: Client loader contract
         run: node tools/client-contract.mjs
+      - name: End-to-end pipeline (fake model, no network)
+        run: node tools/e2e-fake.mjs
 
   package:
     runs-on: ubuntu-latest
