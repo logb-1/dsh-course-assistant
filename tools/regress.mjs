@@ -24,7 +24,7 @@ import { buildOutline } from '../core/outline.js'
 import { assessQuality } from '../core/quality.js'
 import { detectDomain } from '../core/domain.js'
 import { supportScore, evaluateSummary } from '../core/verify.js'
-import { selectPassages } from '../core/summarize.js'
+import { selectPassages, summarizeChapter } from '../core/summarize.js'
 import { splitSections } from '../core/sections.js'
 import { auditCoverage } from '../core/audit.js'
 import { createStore } from '../core/store.js'
@@ -616,6 +616,7 @@ check('知识图抽取：识别 text-delta 流并过结构校验', async () => {
       { id: 'unsigned', name: '无符号整数', chapter: 2, evidence: '无符号整数表示' },
       { id: 'twos', name: '补码', chapter: 2, evidence: '补码表示法' },
       { id: 'float', name: '浮点数', chapter: 3, evidence: 'IEEE754 浮点' },
+      { id: 'english', name: '中职英语', chapter: 2, evidence: '语法总结' },
     ],
     edges: [
       { from: 'bit', to: 'unsigned' },
@@ -638,10 +639,11 @@ check('知识图抽取：识别 text-delta 流并过结构校验', async () => {
     model: 'm',
     courseTitle: '计算机系统基础',
     chapters: [{ index: 1, title: '概述' }, { index: 2, title: '数据表示' }, { index: 3, title: '浮点数' }],
-    texts: ['一', '二', '三'],
+    texts: ['二进制位与机器数', '无符号整数与补码表示法', 'IEEE754 浮点数与单精度'],
   })
   assert(result, '应当解析出知识图')
-  assert(result.concepts.length === 4, `概念数应为 4，实际 ${result.concepts?.length}`)
+  assert(result.concepts.length === 4, `原文里查不到的概念应被丢掉，应剩 4 个，实际 ${result.concepts?.length}`)
+  assert(result.stats.droppedConcepts === 1, `应有 1 个概念因原文没有依据被丢，实际 ${result.stats.droppedConcepts}`)
   assert(result.stats.accepted === 3, `三条合法边应接受，实际 ${result.stats.accepted}`)
   assert(result.stats.rejected === 1, '跨章反向的那条应被拒')
   return `${result.stats.concepts} 概念 / ${result.stats.accepted} 边`
@@ -753,6 +755,48 @@ check('选段：分节后每个小节都至少保留一段', () => {
   assert(out.includes('第30段'), '第二节应有段落入选')
   assert(out.length <= 1100, `选段不应大幅超出预算，实际 ${out.length}`)
   return `${out.length} 字`
+})
+
+check('thorough：逐节调用模型并合并去重', async () => {
+  const sections = ['一、甲节', '二、乙节', '三、丙节', '四、丁节']
+  const body = sections.map((title) => `${title}\n${'本节内容讲述原理与实现细节。'.repeat(90)}`).join('\n')
+  let calls = 0
+  const llm = {
+    stream(options) {
+      calls += 1
+      const prompt = options.messages[0].content[0].text
+      const title = /本章：第 \d+ 章 (.+)/.exec(prompt)?.[1]?.trim() || '整章'
+      return (async function* () {
+        yield {
+          type: 'text-delta',
+          text: JSON.stringify({
+            chapter: title,
+            key_points: [{ text: `${title} 的要点`, evidence: `${title}` }],
+            important: [],
+            difficult: [],
+            keywords: ['计算机系统 测试'],
+          }),
+        }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })()
+    },
+  }
+  const result = await summarizeChapter({
+    llm,
+    provider: 'p',
+    model: 'm',
+    courseTitle: '计算机系统基础',
+    chapter: { index: 1, title: '第一章', subs: sections },
+    text: body,
+    outline: [],
+    domain: null,
+    coverageMode: 'thorough',
+  })
+  assert(calls >= 2 && calls <= 4, `逐节调用应为 2-4 次，实际 ${calls}`)
+  assert(result.sectionCalls === calls, `sectionCalls 应等于调用次数，实际 ${result.sectionCalls}/${calls}`)
+  assert(result.key_points.length >= 2, `合并后应至少 2 条要点，实际 ${result.key_points.length}`)
+  assert(result.key_points.length <= 12, '合并后要点不应超过 12 条')
+  return `${calls} 次调用 / ${result.key_points.length} 条要点`
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

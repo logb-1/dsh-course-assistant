@@ -50,7 +50,7 @@ export const Config = Schema.object({
   withVideos: Schema.boolean().default(true).description('默认是否检索 B 站网课'),
   images: Schema.string().default('ocr').description('幻灯片图片 OCR：ocr 读取图片文字，off 关闭'),
   imagesMax: Schema.natural().default(40).description('每份课件最多 OCR 的图片数'),
-  coverage: Schema.string().default('auto').description('要点覆盖：auto 自动判断，fast 快速，thorough 分节（下一版生效）'),
+  coverage: Schema.string().default('auto').description('要点覆盖：auto 自动，fast 不分节提示（最省），thorough 逐节摘要（每章最多 4 次调用）'),
   vision: Schema.string().default('').description('多模态模型（预留，留空关闭）'),
   domain: Schema.string().default('').description('强制课程领域（如 C++），留空自动识别'),
   ocrMaxPages: Schema.natural().min(1).max(400).default(60).description('OCR 重读页数上限'),

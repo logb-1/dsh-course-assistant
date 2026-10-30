@@ -6,7 +6,7 @@
  * only sees earlier key_points — never the source text again.
  */
 import { anchorQuery } from './domain.js'
-import { pointText } from './verify.js'
+import { normalizeForMatch, pointText } from './verify.js'
 import { splitSections } from './sections.js'
 export const CHAPTER_PROMPT_VERSION = 5
 const MAX_CHAPTER_CHARS = 3600
@@ -265,6 +265,68 @@ export function selectPassages(text, max = MAX_CHAPTER_CHARS, options = {}) {
   return chosen.length < passages.length ? `${text2}\n…（已按相关性节选 ${chosen.length}/${passages.length} 段）…` : text2
 }
 
+function bigramSet(text) {
+  const clean = normalizeForMatch(text)
+  const out = new Set()
+  for (let i = 0; i + 2 <= clean.length; i += 1) out.add(clean.slice(i, i + 2))
+  return out
+}
+
+function similar(a, b) {
+  if (a === b) return true
+  if (!a || !b) return false
+  const left = bigramSet(a)
+  const right = bigramSet(b)
+  if (!left.size || !right.size) return false
+  let shared = 0
+  for (const gram of left) if (right.has(gram)) shared += 1
+  return shared / Math.min(left.size, right.size) >= 0.7
+}
+
+/**
+ * Merge per-section summaries: same chapter, but each call only saw one section,
+ * so duplicates are real (the same definition can appear twice) and the merged
+ * list must stay readable.
+ */
+export function mergeSectionSummaries(parts, { chapter, sourceChars = 0, sections = 0 } = {}) {
+  const points = []
+  for (const part of parts) {
+    for (const point of part.key_points || []) {
+      const text = String(point.text || '').trim()
+      if (!text) continue
+      const key = normalizeForMatch(text)
+      if (points.some((existing) => similar(normalizeForMatch(existing.text), key))) continue
+      points.push({ text, evidence: String(point.evidence || '').trim() })
+    }
+  }
+  const union = (field) => {
+    const seen = new Set()
+    const out = []
+    for (const part of parts) {
+      for (const value of part[field] || []) {
+        const key = normalizeForMatch(value)
+        if (!key || seen.has(key)) continue
+        seen.add(key)
+        out.push(value)
+      }
+    }
+    return out
+  }
+  return {
+    chapter: chapter?.title || parts[0]?.chapter || '',
+    key_points: points.slice(0, 12),
+    important: union('important').slice(0, 4),
+    difficult: union('difficult').slice(0, 4),
+    keywords: union('keywords').slice(0, 5),
+    unsupported_idx: null,
+    partial: points.length === 0,
+    sourceChars,
+    keptChars: parts.reduce((n, part) => n + (part.keptChars || 0), 0),
+    sectionCalls: parts.length,
+    sectionTotal: sections,
+  }
+}
+
 export function truncate(text, max = MAX_CHAPTER_CHARS, options = {}) {
   return selectPassages(text, max, options)
 }
@@ -284,6 +346,35 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
   // Split first, then select: every section keeps at least one passage even when
   // its vocabulary is too plain to win on TF-IDF.
   const sections = splitSections(chapter, source)
+
+  // thorough: one model call per (largest) section, merged locally. A single
+  // 3.6k window makes the model choose which sections to skip; this way every
+  // section is read by something, at the cost of up to four calls.
+  if (coverageMode === 'thorough' && sections.length >= 2 && source.length > MAX_CHAPTER_CHARS) {
+    const picks = [...sections].sort((a, b) => b.chars - a.chars).slice(0, 4)
+    const parts = []
+    for (const section of picks) {
+      try {
+        parts.push(
+          await summarizeChapter({
+            llm,
+            provider,
+            model,
+            courseTitle,
+            chapter: { ...chapter, title: section.title, subs: [] },
+            text: section.text,
+            outline,
+            domain,
+            signal,
+            maxTokens,
+            coverageMode: 'auto',
+          }),
+        )
+      } catch {}
+    }
+    if (parts.length) return mergeSectionSummaries(parts, { chapter, sourceChars: source.length, sections: sections.length })
+  }
+
   const body = truncate(source, Math.max(600, Math.round(MAX_CHAPTER_CHARS * passageRatio)), { sections })
   const prompt = [
     `课程名：${courseTitle}`,

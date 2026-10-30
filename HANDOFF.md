@@ -590,3 +590,22 @@ OCR 出「关系 / 表达式 / 2147483647 > …」等真实内容；`ocrImage` �
 不做"每节一次调用"——这点已在配置描述里写明，避免假开关。
 
 **测试**：`--unit` 33 项（新增：分节三种切法、覆盖率命中/缺失、分节保底选段），`--real` 9 项，契约通过。
+
+## 二十一、2026-10-30 · 1.9.0 概念依据校验 + thorough 逐节摘要
+
+补完问题①②的最后两块：
+
+1. **概念必须有原文依据**（`core/knowledge.js`）
+   - 模型给出的每个概念，其名称或 evidence 必须能在该章正文里命中（去空白/标点的宽松匹配）；
+     命中不了直接丢弃，并把数量记进 `stats.droppedConcepts`。
+   - 被丢概念上的前置边自然变成 `unknown-from/to` 被 `validateEdges` 拒绝——图只会缩，不会撒谎。
+   - 单测：假 LLM 里混入一个「中职英语」，断言概念剩 4 个、droppedConcepts=1。
+2. **`thorough` 真正逐节调用**（`core/summarize.js`）
+   - `coverage: 'thorough'` 且章节 > 3600 字且 ≥2 节时，取最大的 4 节各调一次模型，
+     本地合并：要点按 bigram 相似度 ≥0.7 去重、上限 12 条；important/difficult/keywords 取并集。
+   - 返回 `sectionCalls` / `sectionTotal` 便于在 job 里核对成本。
+   - 单测：4 节长章 → 2-4 次调用、合并后 ≥2 条要点、≤12 条。
+3. `coverage` 配置描述改为诚实说明：fast 不分节提示、auto 自动、thorough 每章最多 4 次调用。
+
+**测试**：`--unit` **34 项**、`--real` 9 项、`e2e(fake)` 1 项、client 契约，全绿。
+**发布**：1.9.0；npm token 失效 + GitHub 443 不通，等待用户换 token / 网络恢复后统一发布。

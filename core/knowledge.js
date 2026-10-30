@@ -65,6 +65,9 @@ function parseJson(raw) {
   }
 }
 
+/** Loose form for substring checks: OCR and slide text carry stray spaces. */
+const plain = (value) => String(value || '').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '')
+
 const slug = (value) =>
   String(value || '')
     .toLowerCase()
@@ -103,6 +106,7 @@ export async function extractKnowledge({ llm, provider, model, courseTitle, chap
   if (!parsed) throw new Error('知识图返回的不是可解析 JSON')
 
   const chapterOf = new Map(chapters.map((c) => [c.index, c]))
+  const plainTextOf = new Map(chapters.map((chapter, i) => [chapter.index, plain(texts?.[i] || '')]))
   const concepts = []
   const seen = new Set()
   for (const item of Array.isArray(parsed.concepts) ? parsed.concepts : []) {
@@ -116,6 +120,19 @@ export async function extractKnowledge({ llm, provider, model, courseTitle, chap
     concepts.push({ id, name, chapter, evidence: String(item?.evidence || '').slice(0, 120) })
     if (concepts.length >= MAX_CONCEPTS) break
   }
+  // A concept the model invented has no trace in the chapter it claims: drop it
+  // rather than letting a plausible-looking graph decide the study plan.
+  let droppedConcepts = 0
+  const grounded = []
+  for (const concept of concepts) {
+    const body = plainTextOf.get(concept.chapter) || ''
+    const byName = plain(concept.name).length >= 2 && body.includes(plain(concept.name))
+    const byEvidence = plain(concept.evidence).length >= 4 && body.includes(plain(concept.evidence))
+    if (byName || byEvidence) grounded.push(concept)
+    else droppedConcepts += 1
+  }
+  concepts.length = 0
+  concepts.push(...grounded)
   if (concepts.length < 4) return null
 
   const proposed = (Array.isArray(parsed.edges) ? parsed.edges : [])
@@ -137,6 +154,7 @@ export async function extractKnowledge({ llm, provider, model, courseTitle, chap
       proposed: proposed.length,
       accepted: accepted.length,
       rejected: rejected.length,
+      droppedConcepts,
       depth: graphDepth(graph),
     },
   }
