@@ -7,6 +7,7 @@
  */
 import { anchorQuery } from './domain.js'
 import { pointText } from './verify.js'
+import { splitSections } from './sections.js'
 export const CHAPTER_PROMPT_VERSION = 5
 const MAX_CHAPTER_CHARS = 3600
 
@@ -117,7 +118,9 @@ function parseJson(raw) {
       return { text: String(p || '').replace(/^[-*•\d.、\s]+/, '').trim(), evidence: '' }
     })
     .filter((p) => p.text)
-    .slice(0, 8)
+    // a sectioned chapter can legitimately produce more than six points; the
+    // prompt asks for one per section, capped at 12
+    .slice(0, 12)
   return {
     chapter: String(value.chapter || ''),
     key_points: points.length ? points : arr(value.key_points ?? value.keyPoints ?? value.points, 8).map((text) => ({ text, evidence: '' })),
@@ -161,7 +164,7 @@ function splitPassages(text) {
   return sentences.length >= 4 ? sentences : paras
 }
 
-export function selectPassages(text, max = MAX_CHAPTER_CHARS) {
+export function selectPassages(text, max = MAX_CHAPTER_CHARS, options = {}) {
   const body = String(text || '').trim()
   if (body.length <= max) return body
   const passages = splitPassages(body)
@@ -191,6 +194,22 @@ export function selectPassages(text, max = MAX_CHAPTER_CHARS) {
     const f = df.get(gram) || 1
     return f >= 2 && f <= N * 0.8
   }
+  // offsets let a passage be attributed to a section
+  let cursor = 0
+  const offsets = passages.map((passage) => {
+    const at = body.indexOf(passage, cursor)
+    cursor = at >= 0 ? at + passage.length : cursor
+    return at >= 0 ? at : cursor
+  })
+  const sections = Array.isArray(options.sections) ? options.sections : []
+  const sectionIndexAt = (offset) => {
+    let found = 0
+    for (let i = 0; i < sections.length; i += 1) {
+      if (sections[i].from <= offset) found = i
+      else break
+    }
+    return found
+  }
   const scored = passages.map((passage, index) => {
     const grams = gramsOf[index].filter(usable)
     if (!grams.length) return { passage, index, score: 0 }
@@ -205,6 +224,25 @@ export function selectPassages(text, max = MAX_CHAPTER_CHARS) {
   const chosen = []
   const picked = new Set()
   let used = 0
+  // Every section gets one slot first: a section with few repeated terms used to
+  // score near zero and vanish from the summary entirely.
+  if (sections.length > 1) {
+    const best = new Map()
+    for (const item of scored) {
+      const at = sectionIndexAt(offsets[item.index])
+      const previous = best.get(at)
+      if (!previous || item.score > previous.score) best.set(at, item)
+    }
+    const budget = Math.max(600, Math.floor(max * 0.55))
+    for (const item of [...best.values()].sort((a, b) => a.index - b.index)) {
+      if (used >= budget) break
+      const cost = item.passage.length + 2
+      if (used + cost > max) continue
+      chosen.push(item)
+      picked.add(item.index)
+      used += cost
+    }
+  }
   // the opening states what the chapter is about, the closing often summarises it
   for (const anchor of [scored[0], scored[scored.length - 1]]) {
     if (!anchor || picked.has(anchor.index)) continue
@@ -227,11 +265,11 @@ export function selectPassages(text, max = MAX_CHAPTER_CHARS) {
   return chosen.length < passages.length ? `${text2}\n…（已按相关性节选 ${chosen.length}/${passages.length} 段）…` : text2
 }
 
-export function truncate(text, max = MAX_CHAPTER_CHARS) {
-  return selectPassages(text, max)
+export function truncate(text, max = MAX_CHAPTER_CHARS, options = {}) {
+  return selectPassages(text, max, options)
 }
 
-export async function summarizeChapter({ llm, provider, model, courseTitle, chapter, text, outline, domain, signal, maxTokens, passageRatio = 1 }) {
+export async function summarizeChapter({ llm, provider, model, courseTitle, chapter, text, outline, domain, signal, maxTokens, passageRatio = 1, coverageMode = 'auto' }) {
   // `chapter` is metadata only: the body must be passed explicitly, otherwise the
   // model summarises a title and every evidence quote fails to match.
   const source = String(text ?? chapter.text ?? '')
@@ -243,13 +281,23 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
     : ''
   // A retry can shrink the input as well as raise the budget: a long chapter is
   // what makes a reasoning model return nothing at all.
-  const body = truncate(source, Math.max(600, Math.round(MAX_CHAPTER_CHARS * passageRatio)))
+  // Split first, then select: every section keeps at least one passage even when
+  // its vocabulary is too plain to win on TF-IDF.
+  const sections = splitSections(chapter, source)
+  const body = truncate(source, Math.max(600, Math.round(MAX_CHAPTER_CHARS * passageRatio)), { sections })
   const prompt = [
     `课程名：${courseTitle}`,
     domain ? `课程领域：${domain.name}（本章 keywords 必须以「${domain.name}」开头）` : '',
     outlineLine,
     `本章：第 ${chapter.index} 章 ${chapter.title}`,
-    chapter.subs?.length ? `本节标题：${chapter.subs.slice(0, 8).join(' / ')}` : '',
+    sections.length > 1 && coverageMode !== 'fast'
+      ? `本章分 ${sections.length} 个小节：${sections
+          .slice(0, 12)
+          .map((s) => s.title)
+          .join(' / ')}。请为每个小节至少给 1 条要点（总数 3-12 条），没有考点的小节在 skipped_sections 里列名。`
+      : chapter.subs?.length
+        ? `本节标题：${chapter.subs.slice(0, 8).join(' / ')}`
+        : '',
     '以下是该章原文（已去页眉页脚）：',
     '"""',
     body,

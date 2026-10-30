@@ -21,6 +21,7 @@ import { assessQuality, describeQuality } from './quality.js'
 import { ocrPdf, ocrImage, ocrStatus } from './ocr.js'
 import { attachImageText, listPptxImages } from './media.js'
 import { classifyError, planChapters, nextChapterAction, FAILURE } from './schedule.js'
+import { auditCoverage, describeCoverage, summarizeCoverage } from './audit.js'
 import { createGraph } from './graph.js'
 import { extractKnowledge, fallbackKnowledge } from './knowledge.js'
 import { detectDomain } from './domain.js'
@@ -481,6 +482,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
         if (!summary) {
           try {
             summary = await summarizeWithRetry({
+              coverageMode: options?.coverage || 'auto',
               llm,
               provider: llm.provider,
               model: llm.model,
@@ -508,6 +510,11 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
         summary = { ...localSummary({ ...chapter, text }), offline: true }
       }
       applyAssessment({ summary, chapter, text, warnings })
+      // coverage is a different failure from confidence: a chapter can quote
+      // perfectly and still have dropped three sections
+      try {
+        chapter.coverage = auditCoverage({ chapter, text, summary })
+      } catch {}
       locatePages(chapter, summary, docs)
       telemetry.modelCalls += summary.sourceChars ? 1 : 0
       telemetry.sourceChars += summary.sourceChars || 0
@@ -669,6 +676,12 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     }
   }
 
+  const coverage = summarizeCoverage(chapters)
+  job.coverage = coverage
+  if (coverage.total && coverage.ratio < 0.8) {
+    warnings.push(`要点覆盖偏低：${describeCoverage(coverage)}`)
+  }
+
   push({ phase: 'summary', message: '生成全课程总结…', progress: 0.83 })
 
   /* ---------------- 4. course summary ---------------- */
@@ -729,6 +742,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       warnings,
       quality,
       images: job.images || null,
+      coverage: job.coverage || null,
       domain: job.domain,
       offline: !useModel || chapters.every((c) => c.summary?.offline),
       generatedAt: new Date().toISOString().slice(0, 19).replace('T', ' '),

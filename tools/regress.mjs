@@ -25,6 +25,8 @@ import { assessQuality } from '../core/quality.js'
 import { detectDomain } from '../core/domain.js'
 import { supportScore, evaluateSummary } from '../core/verify.js'
 import { selectPassages } from '../core/summarize.js'
+import { splitSections } from '../core/sections.js'
+import { auditCoverage } from '../core/audit.js'
 import { createStore } from '../core/store.js'
 import { __debug as ooxmlDebug } from '../core/ooxml.js'
 import { boundaryF1, evaluateDoc, windowDiff } from './segment-metrics.mjs'
@@ -702,6 +704,55 @@ check('图片抽取：尺寸解析与文本回填', () => {
   assert(page.text.includes('幻灯片正文') && page.text.includes('[图片] 补码 表示法'), 'OCR 文本应回填到页正文')
   assert(attachImageText({ index: 5, text: 'x' }, ['  ']).text === 'x', '全空 OCR 不应改动正文')
   return 'png+jpeg 尺寸与回填 ok'
+})
+
+check('分节：按小标题与编号切分，无小标题则整章一节', () => {
+  const chapter = { title: '章', subs: ['一、概述', '二、数据'] }
+  const text = '一、概述\n概述内容。\n二、数据\n补码与原码。'
+  const bySubs = splitSections(chapter, text)
+  assert(bySubs.length === 2, `按小标题应切出 2 节，实际 ${bySubs.length}`)
+  assert(bySubs[1].text.includes('补码'), '第二节应包含补码内容')
+
+  const numbered = splitSections({ title: 'x' }, '1. 第一点\n内容一\n2. 第二点\n内容二')
+  assert(numbered.length === 2, `按编号应切出 2 节，实际 ${numbered.length}`)
+
+  const single = splitSections({ title: 'x' }, '没有小标题的一段话。')
+  assert(single.length === 1, '没有小标题时应整章一节')
+  return `${bySubs.length}/${numbered.length}/1`
+})
+
+check('覆盖率审计：命中的节算覆盖，没提的节进 missing', () => {
+  const chapter = { title: '章', subs: ['一、概述', '二、数据', '三、浮点'] }
+  const text = '一、概述\n闭卷考试，150 分钟。\n二、数据\n补码表示法把减法变成加法。\n三、浮点\nIEEE754 单精度。'
+  const summary = {
+    key_points: [
+      { text: '闭卷 150 分钟', evidence: '闭卷考试，150 分钟。' },
+      { text: '补码把减法变加法', evidence: '补码表示法把减法变成加法。' },
+    ],
+  }
+  const audit = auditCoverage({ chapter, text, summary })
+  assert(audit.total === 3, `应有 3 节，实际 ${audit.total}`)
+  assert(audit.covered === 2, `应覆盖 2 节，实际 ${audit.covered}`)
+  assert(audit.missing.length === 1 && audit.missing[0].includes('浮点'), `缺失节应指向浮点，实际 ${JSON.stringify(audit.missing)}`)
+  const empty = auditCoverage({ chapter, text, summary: { key_points: [] } })
+  assert(empty.covered === 0 && empty.ratio === 0, '无要点时覆盖率应为 0')
+  return `${audit.covered}/${audit.total}`
+})
+
+check('选段：分节后每个小节都至少保留一段', () => {
+  const parts = []
+  for (let i = 1; i <= 30; i += 1) parts.push(`第${i}段：补码与原码的区别，符号位参与运算。`)
+  const text = parts.join('\n\n')
+  const out = selectPassages(text, 900, {
+    sections: [
+      { title: 'a', from: 0 },
+      { title: 'b', from: Math.floor(text.length / 2) },
+    ],
+  })
+  assert(out.includes('第1段'), '第一节应有段落入选')
+  assert(out.includes('第30段'), '第二节应有段落入选')
+  assert(out.length <= 1100, `选段不应大幅超出预算，实际 ${out.length}`)
+  return `${out.length} 字`
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */
