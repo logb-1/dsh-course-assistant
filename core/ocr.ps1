@@ -1,6 +1,7 @@
 param(
-  [Parameter(Mandatory = $true)][string]$Pdf,
-  [Parameter(Mandatory = $true)][string]$OutDir,
+  [string]$Pdf = '',
+  [string]$OutDir = '',
+  [string]$Image = '',
   [int]$First = 0,
   [int]$Last = -1,
   [int]$Width = 1600
@@ -39,6 +40,22 @@ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage((New-Object Windo
 if (-not $engine) {
   Write-Output (ConvertTo-Json @{ error = 'no-zh-ocr-engine' } -Compress)
   exit 3
+}
+
+if ($Image) {
+  $imgFile = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Image)) ([Windows.Storage.StorageFile])
+  $imgStream = Await ($imgFile.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+  $imgDecoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($imgStream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+  $imgBitmap = Await ($imgDecoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+  $imgResult = Await ($engine.RecognizeAsync($imgBitmap)) ([Windows.Media.Ocr.OcrResult])
+  $imgText = ($imgResult.Lines | ForEach-Object { $_.Text }) -join "`n"
+  Write-Output (ConvertTo-Json @{ page = 1; text = $imgText } -Compress)
+  $imgStream.Dispose()
+  exit 0
+}
+if (-not $Pdf) {
+  Write-Output (ConvertTo-Json @{ error = 'no-input' } -Compress)
+  exit 4
 }
 
 $file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Pdf)) ([Windows.Storage.StorageFile])

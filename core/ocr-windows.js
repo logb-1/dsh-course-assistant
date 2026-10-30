@@ -99,6 +99,44 @@ function recognize(pdfPath, options = {}) {
   })
 }
 
+
+function recognizeImage(imagePath) {
+  const native = String(imagePath).replace(/\//g, '\\')
+  return new Promise((resolve, reject) => {
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT, '-Image', native], {
+      windowsHide: true,
+    })
+    let buffer = ''
+    let stderr = ''
+    let text = ''
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk.toString('utf8')
+      let index
+      while ((index = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, index).trim()
+        buffer = buffer.slice(index + 1)
+        if (!line) continue
+        try {
+          const msg = JSON.parse(line)
+          if (msg.error) reject(new Error(`OCR 引擎不可用：${msg.error}`))
+          else if (typeof msg.text === 'string') text = msg.text
+        } catch {}
+      }
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8')
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code !== 0 && !text) {
+        reject(new Error(`图片 OCR 失败（exit ${code}）：${stderr.slice(-200) || '无输出'}`))
+        return
+      }
+      resolve(text)
+    })
+  })
+}
+
 export default {
   id: 'windows',
   label: 'Windows OCR（WinRT）',
@@ -106,4 +144,5 @@ export default {
   available: () => process.platform === 'win32',
   availableSync: () => process.platform === 'win32',
   recognize,
+  recognizeImage,
 }

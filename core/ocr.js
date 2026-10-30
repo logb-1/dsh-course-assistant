@@ -83,6 +83,16 @@ export async function ocrPdf(pdfPath, options = {}) {
  * Both engines emit one physical line per line. Windows OCR separates CJK
  * glyphs with spaces ("第 二 章"), so join CJK runs but keep latin words apart.
  */
+
+/** OCR one image file; engines that cannot read images simply report unsupported. */
+export async function ocrImage(imagePath, options = {}) {
+  const engine = options.engine && engines.has(options.engine) ? engines.get(options.engine) : pickOcrEngine(options.engine)
+  if (!engine) throw new Error('没有可用的 OCR 引擎')
+  if (typeof engine.recognizeImage !== 'function') throw new Error(`OCR 引擎 ${engine.id} 不支持图片`)
+  const text = await engine.recognizeImage(imagePath, options)
+  return normalizeOcrText(text || '')
+}
+
 export function normalizeOcrText(text) {
   return String(text)
     .replace(/\r/g, '')

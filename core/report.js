@@ -159,6 +159,7 @@ export function buildReport(input) {
     meta.model ? `总结模型：${meta.model}` : '',
     meta.domain ? `领域锚定：${meta.domain.name}${meta.domain.source === 'config' ? '（配置）' : '（从课件代码特征识别）'}` : '',
     meta.quality ? `文本可读性：${describeQuality(meta.quality)}` : '',
+    meta.images ? `幻灯片图片：OCR ${meta.images.read}/${meta.images.images} 张，补充 ${meta.images.chars} 字` : '',
     meta.offline ? '总结方式：本地兜底（模型不可用）' : '',
   ].filter(Boolean)
   out.push(`> ${bits.join(' ｜ ')}`)

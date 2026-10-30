@@ -9,15 +9,17 @@
  *      keywords exist, so partial results show up early.
  */
 import { createHash } from 'node:crypto'
-import { basename, relative, isAbsolute } from 'node:path'
-import { existsSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, relative, isAbsolute, join } from 'node:path'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { parseFile } from './parser.js'
 import { buildOutline } from './outline.js'
 import { summarizeChapter, summarizeCourse, mapLimit, localSummary, CHAPTER_PROMPT_VERSION } from './summarize.js'
 import { buildReport } from './report.js'
 import { renderDashboardHtml } from './dashboard.js'
 import { assessQuality, describeQuality } from './quality.js'
-import { ocrPdf, ocrStatus } from './ocr.js'
+import { ocrPdf, ocrImage, ocrStatus } from './ocr.js'
+import { attachImageText, listPptxImages } from './media.js'
 import { classifyError, planChapters, nextChapterAction, FAILURE } from './schedule.js'
 import { createGraph } from './graph.js'
 import { extractKnowledge, fallbackKnowledge } from './knowledge.js'
@@ -151,7 +153,7 @@ export function dedupeKeyFor(inputs, options, llm) {
  * same documents as the original job, otherwise chapter numbers drift.
  * OCR results are cached by content hash so a rerun never re-runs OCR.
  */
-async function prepareDocs({ inputs, store, ocr, warnings, push }) {
+async function prepareDocs({ inputs, store, ocr, images, warnings, push }) {
   const docs = []
   const files = []
   for (const input of inputs) {
@@ -171,7 +173,7 @@ async function prepareDocs({ inputs, store, ocr, warnings, push }) {
       warnings.push(`解析失败：${label} — ${error.message}`)
     }
   }
-  if (!docs.length) return { docs, files, dropped: [], ocrInfo: null }
+  if (!docs.length) return { docs, files, dropped: [], ocrInfo: null, imageInfo: null }
 
   // Prefer the Office source over an exported PDF of the same deck: the XML text
   // is complete, the PDF text often only carries glyph ids.
@@ -244,7 +246,67 @@ async function prepareDocs({ inputs, store, ocr, warnings, push }) {
 
   const scanned = usable.filter((d) => d.kind === 'pdf' && d.pages.length && d.pages.every((p) => p.text.length < 40))
   if (scanned.length) warnings.push(`疑似扫描版 PDF（无文本层）：${scanned.map((d) => d.name).join('、')}`)
-  return { docs: usable, files, dropped, ocrInfo }
+  /* ---------------- slide pictures ---------------- */
+  // The OOXML text layer never contains a screenshot or a diagram, so the model
+  // has been summarising slides that were mostly pictures. Read those pictures
+  // and append their text to the slide before the outline is built.
+  let imageInfo = null
+  if (images?.mode === 'ocr') {
+    const engines = await ocrStatus()
+    const ready = images.engine ? engines.find((e) => e.id === images.engine)?.available : engines.some((e) => e.available)
+    const targets = usable.filter((d) => d.kind === 'pptx' && d.sourcePath)
+    if (targets.length && !ready) {
+      warnings.push('图片 OCR 不可用：没有检测到 OCR 引擎，幻灯片里的图片本轮跳过')
+    } else {
+      let total = 0
+      let read = 0
+      let chars = 0
+      for (const doc of targets) {
+        try {
+          const buf = readFileSync(doc.sourcePath)
+          const found = listPptxImages(buf, { max: Number(images.max) || 40 })
+          if (!found.length) continue
+          total += found.length
+          push({ phase: 'ocr', message: `读取幻灯片图片：${doc.name}（${found.length} 张）`, progress: 0.07 })
+          const bySlide = new Map()
+          for (const image of found) {
+            const cacheName = `img-${image.sha}.json`
+            let text = null
+            const cached = store.readOcr?.(cacheName)
+            if (cached && typeof cached.text === 'string') text = cached.text
+            else {
+              const ext = image.type === 'jpeg' ? 'jpg' : 'png'
+              const temp = join(tmpdir(), `ca-img-${image.sha}.${ext}`)
+              try {
+                writeFileSync(temp, image.data)
+                text = await ocrImage(temp, { engine: images.engine })
+              } catch (error) {
+                warnings.push(`图片 OCR 失败：${image.name} — ${error.message}`)
+              } finally {
+                rmSync(temp, { force: true })
+              }
+              if (text != null) store.writeOcr?.(cacheName, { text })
+            }
+            if (!text || !text.trim()) continue
+            read += 1
+            chars += text.length
+            if (!bySlide.has(image.slide)) bySlide.set(image.slide, [])
+            bySlide.get(image.slide).push(text)
+            push({ message: `图片 OCR ${read}/${total}`, progress: 0.07 })
+          }
+          for (const page of doc.pages || []) {
+            const texts = bySlide.get(page.index)
+            if (texts?.length) Object.assign(page, attachImageText(page, texts))
+          }
+        } catch (error) {
+          warnings.push(`图片抽取失败：${doc.name} — ${error.message}`)
+        }
+      }
+      if (total) imageInfo = { engine: images.engine || 'auto', images: total, read, chars }
+    }
+  }
+
+  return { docs: usable, files, dropped, ocrInfo, imageInfo }
 }
 
 /** Input manifest: what the job consumed, in a form that survives a restart. */
@@ -317,6 +379,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
 
   /* ---------------- 1. parse + twins + optional OCR ---------------- */
   const prepared = await prepareDocs({
+    images: options?.images,
     inputs,
     store,
     ocr: options?.ocr === true ? { enabled: true, engine: options.ocrEngine, python: options.ocrPython, maxPages: options.ocrMaxPages } : null,
@@ -328,6 +391,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   job.inputs = manifestInputs(inputs, store)
   job.inputsDropped = prepared.dropped
   job.ocr = prepared.ocrInfo
+  job.images = prepared.imageInfo
   job.schemaVersion = JOB_SCHEMA_VERSION
   if (!docs.length) {
     push({ status: 'error', phase: 'error', error: `所有文件都无法解析：${warnings.join('；')}`, progress: 1 })
@@ -664,6 +728,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       elapsedMs: job.elapsedMs,
       warnings,
       quality,
+      images: job.images || null,
       domain: job.domain,
       offline: !useModel || chapters.every((c) => c.summary?.offline),
       generatedAt: new Date().toISOString().slice(0, 19).replace('T', ' '),
@@ -758,6 +823,7 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   push({})
 
   const prepared = await prepareDocs({
+    images: previous.images ? { mode: 'ocr', max: Number(previous.images.images) || 40 } : null,
     inputs,
     store,
     // replay exactly the OCR the first run used: the cache makes it instant, and

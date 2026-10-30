@@ -546,3 +546,27 @@ map 回调，于是 `findReusableJob / rememberJobKey / readKnowledge / writeKno
 `store.rememberHistory is not a function` 这类问题会立刻红。
 
 **验证**：`--unit` 29 项（新增历史记录写入/去重/最新优先）、`--real` 9 项、client 契约全绿。
+
+## 十九、2026-10-30 · 1.7.0 幻灯片图片 OCR（模式化）
+
+用户提出两个问题：①PPT 里图片内容读不出来；②要点有缺漏。经代码核对：
+`core/ooxml.js` 只解析文本 run 与 `a:tbl`，**从未读取 `ppt/media`**，所以截图/公式图/流程图等于不存在；
+OCR 又只对 PDF 且需手动开。本次先解决①，②（分节摘要+覆盖率）留下一版。
+
+**新增**
+- `core/media.js`：`listPptxImages()` 从 zip 里按 `a:blip/@r:embed` → rels → `ppt/media/*` 抽图；
+  PNG/JPEG 头部解析尺寸；<8 KB 或短边 <120px 跳过；按 sha 去重；每份上限 40 张。
+  `attachImageText()` 把 OCR 文本以 `[图片] …` 追加到对应页。
+- `core/ocr.ps1` 新增 `-Image` 模式（`-Pdf`/`-OutDir` 改为可选），Windows WinRT 直接识别图片文件；
+  无参数时输出 `{"error":"no-input"}`。
+- `core/ocr-windows.js` 新增 `recognizeImage()`；`core/ocr.js` 新增 `ocrImage()`。
+- `core/pipeline.js#prepareDocs`：解析后、建目录前，对 pptx 逐张 OCR，按图片 sha 缓存到 `ocr/img-<sha>.json`（重跑零成本），
+  结果写回页正文；`job.images = {engine, images, read, chars}`。
+- 报告头部多一行：`幻灯片图片：OCR 12/40 张，补充 2314 字`。
+- Config 新增：`images`（ocr/off，默认 ocr）、`imagesMax`（默认 40）、`coverage`（auto/fast/thorough，预留）、`vision`（预留）。
+
+**实测**：`第3章_3.4_C语言的机器级表示.pptx` 抽出 40 张（达上限），首张 png 886×408 的截图
+OCR 出「关系 / 表达式 / 2147483647 > …」等真实内容；`ocrImage` 走 node 封装与直接跑 ps1 结果一致。
+
+**测试**：`--unit` 30 项（新增图片尺寸解析 + 文本回填 + JPEG SOF 偏移），`--real` 待下次跑。
+**代价**：40 张约 15–40 秒；`images: 'off'` 或 `imagesMax: 0` 可关。

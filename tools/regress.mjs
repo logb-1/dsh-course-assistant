@@ -38,6 +38,7 @@ import { mindmapMermaid, mindmapTree, renderMindmapSection } from '../core/mindm
 import { buildKnowledgePrompt, extractKnowledge, fallbackKnowledge } from '../core/knowledge.js'
 import { dedupeKeyFor } from '../core/pipeline.js'
 import { renderDashboardHtml } from '../core/dashboard.js'
+import { attachImageText, imageSize } from '../core/media.js'
 import { buildTopicProfile } from '../core/topic.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
@@ -674,6 +675,33 @@ check('历史记录：写入、去重、最新优先', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+check('图片抽取：尺寸解析与文本回填', () => {
+  const png = Buffer.alloc(26)
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png, 0)
+  png.writeUInt32BE(886, 16)
+  png.writeUInt32BE(408, 20)
+  const pngSize = imageSize(png)
+  assert(pngSize.type === 'png' && pngSize.width === 886 && pngSize.height === 408, `PNG 尺寸解析失败：${JSON.stringify(pngSize)}`)
+
+  // JPEG: SOI + SOF0 with 640x480
+  const jpeg = Buffer.alloc(40)
+  jpeg[0] = 0xff
+  jpeg[1] = 0xd8
+  jpeg[2] = 0xff
+  jpeg[3] = 0xc0
+  jpeg.writeUInt16BE(17, 4)
+  jpeg[6] = 8
+  jpeg.writeUInt16BE(480, 7)
+  jpeg.writeUInt16BE(640, 9)
+  const jpegSize = imageSize(jpeg)
+  assert(jpegSize.type === 'jpeg' && jpegSize.width === 640 && jpegSize.height === 480, `JPEG 尺寸解析失败：${JSON.stringify(jpegSize)}`)
+
+  const page = attachImageText({ index: 5, text: '幻灯片正文' }, ['补码 表示法', '   '])
+  assert(page.text.includes('幻灯片正文') && page.text.includes('[图片] 补码 表示法'), 'OCR 文本应回填到页正文')
+  assert(attachImageText({ index: 5, text: 'x' }, ['  ']).text === 'x', '全空 OCR 不应改动正文')
+  return 'png+jpeg 尺寸与回填 ok'
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */
