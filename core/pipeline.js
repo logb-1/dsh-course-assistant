@@ -281,7 +281,7 @@ async function prepareDocs({ inputs, store, ocr, images, warnings, push }) {
               const temp = join(tmpdir(), `ca-img-${image.sha}.${ext}`)
               try {
                 writeFileSync(temp, image.data)
-                text = await ocrImage(temp, { engine: images.engine })
+                text = await ocrImage(temp, { engine: images.engine, python: options?.ocrPython })
               } catch (error) {
                 warnings.push(`图片 OCR 失败：${image.name} — ${error.message}`)
               } finally {

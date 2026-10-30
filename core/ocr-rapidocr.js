@@ -45,22 +45,24 @@ function probe(options = {}) {
 }
 
 function recognizeImage(imagePath, options = {}) {
-  return spawnPython(['--image', imagePath], options)
+  return recognize(imagePath, { ...options, image: true }).then((pages) => (pages[0] && pages[0].text) || '')
 }
 
 function recognize(pdfPath, options = {}) {
   const maxPages = Math.max(1, Math.min(400, options.maxPages || 60))
-  const args = [
-    SCRIPT,
-    '--pdf',
-    pdfPath,
-    '--first',
-    '0',
-    '--last',
-    String(maxPages - 1),
-    '--dpi',
-    String(Math.round((Number(options.width) || 1600) / 8.5)),
-  ]
+  const args = options.image
+    ? [SCRIPT, '--image', pdfPath]
+    : [
+        SCRIPT,
+        '--pdf',
+        pdfPath,
+        '--first',
+        '0',
+        '--last',
+        String(maxPages - 1),
+        '--dpi',
+        String(Math.round((Number(options.width) || 1600) / 8.5)),
+      ]
   return new Promise((resolve, reject) => {
     const child = spawn(pythonOf(options), args, { windowsHide: true })
     let buffer = ''
