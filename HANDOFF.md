@@ -867,6 +867,8 @@ node tools/img-e2e.mjs "C:\path\deck.pptx"                    # 图片 OCR 链�
 | 项 | 值 |
 |---|---|
 | 本地版本 | **1.14.0** |
+| npm | **已发布 1.14.0**（48 文件 / 493 KB unpacked），`latest` 已更新 |
+| GitHub | `main` = `ac87ad8`，tag `v1.14.0` 已推 |
 | 面板 | 一行「报告模式：Normal ｜ MAX」（`aria-pressed` 标记选中），选 MAX 时下面提示成本 |
 | 配置 | `reportLevel: 'normal' | 'max'`（默认 `normal`）；旧请求参数 `reportStyle: 'brief' | 'review'` 仍识别 |
 | 测试 | `--unit` **48 项**、`--real` 11 项、`e2e-fake` 1 项、client 契约，全绿 |
