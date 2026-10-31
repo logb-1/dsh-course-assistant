@@ -666,3 +666,55 @@ OCR 出「关系 / 表达式 / 2147483647 > …」等真实内容；`ocrImage` �
   装好后 `imagesEngine: 'rapidocr'` 即可用
 
 **测试**：`--unit` **37 项**（新增 OCR 后处理四类纠正），real 9、e2e、契约全绿。
+
+## 二十四、2026-10-31 交接速览（读这一节就够）
+
+### 状态
+- 版本 **1.11.1**；npm `latest = 1.11.1`；GitHub `main` 同步，tag `v1.11.1`。
+- 测试：`--unit` **37 项**、`--real` 9 项、`tools/e2e-fake.mjs` 1 项、client 契约，全绿。
+- 已收录 awesome-dsh-plugin（PR #8996，2026-10-24 合并），官网中英页面均在线。
+- 工作日志见 `WORKLOG.md`。
+
+### 模块地图
+| 文件 | 职责 |
+|---|---|
+| `index.js` | Config（Schemastery）、HTTP 路由、agent tool、心跳/僵尸清理 |
+| `core/pipeline.js` | 解析 → 分章 → 图片 OCR → 摘要（分节/重试/覆盖）→ 知识图 → 报告/看板 |
+| `core/parser.js` `pdf.js` `ooxml.js` `zip.js` `media.js` | 格式解析与 pptx 内嵌图片抽取 |
+| `core/ocr.js` `ocr.ps1` `ocr-windows.js` `ocr-rapidocr.js` `rapidocr.py` `ocr-text.js` | OCR 引擎 + 预处理 + 文本后处理 |
+| `core/summarize.js` `sections.js` `audit.js` | 提示词、分节保底选段、覆盖率审计 |
+| `core/keywords.js` `terms.js` `topic.js` `bili.js` | 关键词四源融合、主题过滤、B 站分层检索 |
+| `core/graph.js` `knowledge.js` `schedule.js` `mindmap.js` `dashboard.js` | 知识 DAG、确定性调度、报告图与看板 |
+| `core/verify.js` `quality.js` `coverage.js` `search.js` `store.js` | 证据核验、可读性、考纲覆盖、BM25、存储 |
+
+### 命令
+```powershell
+node tools/regress.mjs --unit --strict
+node tools/regress.mjs --real
+node tools/e2e-fake.mjs
+node tools/client-contract.mjs
+node tools/img-e2e.mjs "D:\path\deck.pptx"   # 真实课件图片链路
+node tools/ocr-bench.mjs                     # 需先跑 tools/_gen_ocr_bench.py
+```
+
+### 配置面（`Config`）
+`dataDir / concurrency / withVideos / images / imagesMax / coverage / vision / domain /
+ocrMaxPages / ocrEngine / ocrPython / provider / model / spacingMs / keepUploadsDays`
+
+### 已知限制（别当成 bug 重报）
+- 深色代码截图仍会把 `0` 认成 `9`：规则层解决不了，需 VLM。
+- OCR 只覆盖 pptx 内嵌图片；PDF 图片页仍靠 `ocr: true` 整份开关。
+- 图表里的「关系」读不到，只能拿到文字。
+- `coverage: 'thorough'` 每章最多 4 次调用，token 涨 2–3 倍。
+- BKT / 得分预测未做（缺作答数据，用户明确搁置）。
+
+### 未完成 / 下一步候选
+1. PDF 页级 OCR 分诊（现在只有整份开关）。
+2. 双引擎按置信度选优（需给 `rapidocr.py` 输出分数）。
+3. `vision` 模式接 VLM（dots.ocr / PaddleOCR-VL），解决图表与代码结构。
+4. 历史面板的「筛选/删除」、看板交互。
+5. README 补到 1.11.x（列表页展示的就是 README，夜间重建自动更新，不需要 PR）。
+
+### 运维提醒
+- 发布需要 npm token **带 Bypass 2FA**；聊天里出现过两个 token，应撤销重建。
+- GitHub 443 间歇不通，`git push` 失败时重试即可（`api.github.com` 与 npm registry 通常仍可用）。
