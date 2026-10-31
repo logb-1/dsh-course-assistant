@@ -14,7 +14,7 @@ import { basename, relative, isAbsolute, join } from 'node:path'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { parseFile } from './parser.js'
 import { buildOutline } from './outline.js'
-import { summarizeChapter, summarizeCourse, mapLimit, localSummary, CHAPTER_PROMPT_VERSION } from './summarize.js'
+import { summarizeChapter, summarizeChapterReview, summarizeCourse, summarizeCourseReview, mapLimit, localSummary, CHAPTER_PROMPT_VERSION } from './summarize.js'
 import { buildReport } from './report.js'
 import { renderDashboardHtml } from './dashboard.js'
 import { assessQuality, describeQuality } from './quality.js'
@@ -27,6 +27,7 @@ import { createGraph } from './graph.js'
 import { extractKnowledge, fallbackKnowledge } from './knowledge.js'
 import { detectDomain } from './domain.js'
 import { evaluateSummary, describeConfidence, pointText, pointEvidence, normalizeForMatch } from './verify.js'
+import { describeReview, parseReview, reviewStats, REVIEW_PROMPT_VERSION } from './review.js'
 import { buildIndex, serializePassages } from './search.js'
 import { buildTopicProfile } from './topic.js'
 import { cleanKeywords } from './terms.js'
@@ -79,8 +80,9 @@ export function replayOcrOptions(previous, options = {}) {
 export const JOB_SCHEMA_VERSION = 2
 
 /** Cache identity: prompt version + text + everything else that changes the answer. */
-export function summaryCacheKey(text, { provider, model, domain } = {}) {
-  const scope = `${provider || '-'}/${model || '-'}/${domain?.id || '-'}`
+export function summaryCacheKey(text, { provider, model, domain, style } = {}) {
+  const variant = style === 'review' ? `review${REVIEW_PROMPT_VERSION}` : `brief${CHAPTER_PROMPT_VERSION}`
+  const scope = `${provider || '-'}/${model || '-'}/${domain?.id || '-'}/${variant}`
   return `sum:v${CHAPTER_PROMPT_VERSION}:${sha(text)}:${scope}`
 }
 
@@ -104,10 +106,36 @@ export function locatePages(chapter, summary, docs) {
 }
 
 /**
+ * Chapter text with 【第 N 页】 markers — only the review prompt uses it.
+ *
+ * Markers are what make "第 12 页" a real citation: the model reads the page
+ * numbers the file has, and the parser later checks each cited page against the
+ * chapter's own range. The brief path keeps the clean text so overlap scoring and
+ * the BM25 index never see marker noise.
+ */
+export function pageMarkedText(chapter, docs) {
+  if (!Array.isArray(docs) || docs.length !== 1) return ''
+  const wanted = new Set(chapter.pages || [])
+  const rows = (docs[0].pages || []).filter(
+    (page) => (!wanted.size || wanted.has(page.index)) && String(page.text || '').trim(),
+  )
+  if (!rows.length) return ''
+  return rows.map((page) => `【第 ${page.index} 页】\n${page.text.trim()}`).join('\n\n')
+}
+
+/** "第 12–18 页" for the prompt, so the model knows what it may cite. */
+export function pageRangeLabel(chapter) {
+  const pages = (chapter.pages || []).filter((n) => Number.isInteger(n))
+  if (!pages.length) return ''
+  const min = Math.min(...pages)
+  const max = Math.max(...pages)
+  return min === max ? `第 ${min} 页` : `第 ${min}–${max} 页`
+}
+
+/**
  * Attach the credibility assessment to one chapter. Called by the first run and
  * by the rerun path alike, so both produce identical fields (B3).
- */
-export function applyAssessment({ summary, chapter, text, warnings }) {
+ */export function applyAssessment({ summary, chapter, text, warnings }) {
   const confidence = evaluateSummary(text, summary)
   summary.confidence = confidence
   summary.tier = confidence.tier
@@ -155,7 +183,9 @@ async function summarizeWithRetry(args) {
     if (decision.delayMs) await new Promise((resolve) => setTimeout(resolve, decision.delayMs))
     const extra = decision.action === 'retry' ? { maxTokens: decision.maxTokens, passageRatio: decision.passageRatio } : {}
     try {
-      return await summarizeChapter({ ...args, ...extra })
+      // one retry policy, two contracts: bullets (brief) or a review document
+      const run = args.style === 'review' ? summarizeChapterReview : summarizeChapter
+      return await run({ ...args, ...extra })
     } catch (error) {
       last = error
       attempt += 1
@@ -180,6 +210,8 @@ export function dedupeKeyFor(inputs, options, llm) {
     // OCR settings change the text the model sees, so they change the job
     `o:${ocr.mode}${ocr.pick === 'best' ? '+best' : ''}`,
     `i:${options?.images?.mode || 'ocr'}:${Number(options?.images?.max) || 40}`,
+    // the report style changes what the model is asked for
+    `s:${options?.reportStyle === 'review' ? 'review' : 'brief'}`,
   ].join('|')
   return createHash('sha256').update(files).update('|').update(scope).digest('hex').slice(0, 16)
 }
@@ -463,6 +495,8 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   }
   const concurrency = Math.max(1, Math.min(5, Number(options?.concurrency) || 4))
   const warnings = []
+  // 'review' = 复习资料（模块/知识点/实例/习题）；'brief' = 原来的要点式报告
+  const style = options?.reportStyle === 'review' ? 'review' : 'brief'
 
   const job = {
     id,
@@ -471,6 +505,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     phase: 'parse',
     message: '解析文件…',
     progress: 0.02,
+    style,
     files: [],
     courseTitle: '',
     chapters: [],
@@ -586,7 +621,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     concurrency,
     async ({ chapter, text }) => {
       let summary = null
-      const cacheKey = summaryCacheKey(text, { provider: llm?.provider, model: llm?.model, domain })
+      const cacheKey = summaryCacheKey(text, { provider: llm?.provider, model: llm?.model, domain, style })
       if (useModel && !authMissing) {
         try {
           const cached = await store.cache.get(cacheKey)
@@ -599,6 +634,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
         if (!summary) {
           try {
             summary = await summarizeWithRetry({
+              style,
               coverageMode: options?.coverage || 'auto',
               llm,
               provider: llm.provider,
@@ -606,6 +642,8 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
               courseTitle: outline.courseTitle,
               chapter,
               text,
+              pageText: style === 'review' ? pageMarkedText(chapter, docs) : '',
+              pageRange: docs.length === 1 ? pageRangeLabel(chapter) : '',
               outline: outlineTitles,
               domain,
               signal,
@@ -627,6 +665,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
         summary = { ...localSummary({ ...chapter, text }), offline: true }
       }
       applyAssessment({ summary, chapter, text, warnings })
+      if (summary.review) chapter.reviewStats = reviewStats(summary.review)
       // coverage is a different failure from confidence: a chapter can quote
       // perfectly and still have dropped three sections
       try {
@@ -806,11 +845,27 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     warnings.push(`要点覆盖偏低：${describeCoverage(coverage)}`)
   }
 
-  push({ phase: 'summary', message: '生成全课程总结…', progress: 0.83 })
+  push({ phase: 'summary', message: style === 'review' ? '生成复习框架…' : '生成全课程总结…', progress: 0.83 })
 
-  /* ---------------- 4. course summary ---------------- */
+  /* ---------------- 4. course summary / review framework ---------------- */
   let courseSummary = ''
-  if (useModel) {
+  let framework = null
+  if (useModel && style === 'review') {
+    try {
+      framework = await summarizeCourseReview({
+        llm,
+        provider: llm.provider,
+        model: llm.model,
+        courseTitle: outline.courseTitle,
+        chapters,
+        signal,
+      })
+      courseSummary = framework?.summary || ''
+    } catch (error) {
+      warnings.push(`复习框架生成失败（已退回普通总结）：${error.message}`)
+    }
+  }
+  if (useModel && !courseSummary) {
     try {
       courseSummary = await summarizeCourse({
         llm,
@@ -849,6 +904,25 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     warnings.push(`看板生成失败：${error.message}`)
   }
 
+  // course-wide review totals, so the header can say "34 个知识点 / 9 道习题"
+  let review = null
+  if (style === 'review') {
+    const totals = { modules: 0, points: 0, examples: 0, exercises: 0, answered: 0, byTag: {} }
+    for (const chapter of chapters) {
+      const stats = chapter.reviewStats
+      if (!stats) continue
+      totals.modules += stats.modules
+      totals.points += stats.points
+      totals.examples += stats.examples
+      totals.exercises += stats.exercises
+      totals.answered += stats.answered
+      for (const [tag, count] of Object.entries(stats.byTag || {})) totals.byTag[tag] = (totals.byTag[tag] || 0) + count
+    }
+    review = totals
+    job.review = totals
+    job.framework = framework
+  }
+
   const markdown = buildReport({
     courseTitle: outline.courseTitle,
     files: job.files,
@@ -860,6 +934,9 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     fallback: job.fallback,
     plan,
     knowledge,
+    style,
+    framework,
+    review,
     meta: {
       model: modelLabel,
       elapsedMs: job.elapsedMs,
@@ -872,6 +949,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       offline: !useModel || chapters.every((c) => c.summary?.offline),
       generatedAt: new Date().toISOString().slice(0, 19).replace('T', ' '),
       dashboardPath,
+      style,
     },
   })
   const reportPath = store.writeReport(outline.courseTitle || 'course', markdown)
@@ -1029,16 +1107,22 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   push({ message: `重新总结第 ${target.index} 章：${target.title.slice(0, 20)}`, progress: 0.35 })
 
   let summary
-  const cacheKey = summaryCacheKey(target.text, { provider: llm?.provider, model: llm?.model, domain })
+  // a rerun must use the same contract as the original job, or chapter 3 would
+  // come back as bullets inside a review document
+  const style = previous.style === 'review' || options?.reportStyle === 'review' ? 'review' : 'brief'
+  const cacheKey = summaryCacheKey(target.text, { provider: llm?.provider, model: llm?.model, domain, style })
   if (llm) {
     try {
       summary = await summarizeWithRetry({
+        style,
         llm,
         provider: llm.provider,
         model: llm.model,
         courseTitle: previous.courseTitle || outline?.courseTitle || '',
         chapter,
         text: target.text,
+        pageText: style === 'review' ? pageMarkedText(chapter, docs) : '',
+        pageRange: docs.length === 1 ? pageRangeLabel(chapter) : '',
         outline: (previous.chapters || []).map((c) => c.title),
         domain,
         signal,
@@ -1055,6 +1139,7 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   }
   // same assessment as the first run, otherwise the note disappears after a rerun
   applyAssessment({ summary, chapter, text: target.text, warnings })
+  if (summary.review) chapter.reviewStats = reviewStats(summary.review)
   locatePages(chapter, summary, docs)
   job.telemetry = {
     chapters: (previous.chapters || []).length,

@@ -8,6 +8,17 @@
 import { anchorQuery } from './domain.js'
 import { normalizeForMatch, pointText } from './verify.js'
 import { splitSections } from './sections.js'
+import { parseJsonObject } from './json-repair.js'
+import {
+  FRAMEWORK_SYSTEM,
+  REVIEW_MAX_CHARS,
+  REVIEW_MAX_TOKENS,
+  REVIEW_SYSTEM,
+  buildReviewPrompt,
+  parseReview,
+  reviewKeyPoints,
+  reviewPitfalls,
+} from './review.js'
 export const CHAPTER_PROMPT_VERSION = 5
 const MAX_CHAPTER_CHARS = 3600
 
@@ -49,61 +60,9 @@ function tryParse(s) {
   }
 }
 
-/** Close a JSON document truncated by maxTokens so partial summaries survive. */
-function repairJson(text) {
-  const start = text.indexOf('{')
-  if (start < 0) return null
-  const s = text.slice(start)
-  const stack = []
-  let inStr = false
-  let esc = false
-  let out = ''
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i]
-    out += c
-    if (inStr) {
-      if (esc) esc = false
-      else if (c === '\\') esc = true
-      else if (c === '"') inStr = false
-      continue
-    }
-    if (c === '"') inStr = true
-    else if (c === '{' || c === '[') stack.push(c)
-    else if (c === '}' || c === ']') {
-      stack.pop()
-      if (!stack.length) break
-    }
-  }
-  if (inStr) out += '"'
-  const close = (src) => {
-    let tail = ''
-    for (let i = stack.length - 1; i >= 0; i--) tail += stack[i] === '{' ? '}' : ']'
-    return src + tail
-  }
-  const direct = tryParse(close(out.replace(/[,\s]+$/, '')))
-  if (direct) return direct
-  // still truncated inside a token (e.g. `"key_po`): drop tokens from the end
-  for (let cut = out.length - 1; cut > 20; cut -= 8) {
-    const slice = out.slice(0, cut).replace(/[,\s]+$/, '')
-    const parsed = tryParse(close(slice))
-    if (parsed) return parsed
-  }
-  return null
-}
-
 function parseJson(raw) {
-  const cleaned = String(raw)
-    .replace(/^\s*```(?:json)?\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim()
-  let value = tryParse(cleaned)
-  if (!value) {
-    const from = cleaned.indexOf('{')
-    const to = cleaned.lastIndexOf('}')
-    if (from >= 0 && to > from) value = tryParse(cleaned.slice(from, to + 1))
-  }
-  if (!value) value = repairJson(cleaned)
-  if (!value || typeof value !== 'object') return null
+  const value = parseJsonObject(raw)
+  if (!value) return null
   const arr = (v, max) =>
     (Array.isArray(v) ? v : typeof v === 'string' ? v.split(/[；;\n]/) : [])
       .map((x) => String(x || '').replace(/^[-*•\d.、\s]+/, '').trim())
@@ -436,6 +395,99 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
 }
 
 /**
+ * Review-document variant of summarizeChapter (reportStyle: 'review').
+ *
+ * Same transport and retries, different contract: the model returns modules,
+ * knowledge points, examples and exercises instead of six bullets. The legacy
+ * fields are derived locally from the review, so evidence checks, coverage audit,
+ * keyword extraction and the Bilibili search keep working unchanged.
+ *
+ * `pageText` is the chapter with 【第 N 页】 markers in front of every page: it is
+ * what lets the model cite a real page instead of guessing one.
+ */
+export async function summarizeChapterReview({
+  llm,
+  provider,
+  model,
+  courseTitle,
+  chapter,
+  text,
+  pageText,
+  outline,
+  domain,
+  signal,
+  maxTokens,
+  pageRange,
+}) {
+  const source = String(text ?? chapter.text ?? '')
+  const marked = String(pageText || '') || source
+  const sections = splitSections(chapter, source)
+  const body = truncate(marked, REVIEW_MAX_CHARS, { sections })
+  const prompt = buildReviewPrompt({ courseTitle, chapter, body, sections, outline, domain, pageRange })
+  const raw = await collect(
+    llm.stream({
+      provider,
+      model,
+      system: REVIEW_SYSTEM,
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+      // a retry may only raise the budget: the brief ladder's 3600 would
+      // truncate every review answer
+      maxTokens: Math.max(Number(maxTokens) || 0, REVIEW_MAX_TOKENS),
+      temperature: 0.25,
+      signal,
+    }),
+  )
+  const review = parseReview(raw, { chapter, pages: chapter.pages })
+  if (!review) throw new Error(`模型未返回可解析的复习资料 JSON（前 120 字：${String(raw).slice(0, 120)}）`)
+  const keywords = anchorKeywords(filterKeywords(review.keywords), domain)
+  return {
+    chapter: review.chapter || chapter.title,
+    style: 'review',
+    review,
+    key_points: reviewKeyPoints(review),
+    important: (review.summary.remember || []).slice(0, 4),
+    difficult: reviewPitfalls(review),
+    keywords: keywords.length ? keywords : anchorKeywords(filterKeywords([chapter.title]), domain),
+    unsupported_idx: null,
+    sourceChars: source.length,
+    keptChars: body.length,
+  }
+}
+
+/**
+ * Course-level review framing: overall theme, learning goals and the summary.
+ * One extra call for the whole course; failure falls back to the brief path.
+ */
+export async function summarizeCourseReview({ llm, provider, model, courseTitle, chapters, signal }) {
+  const lines = chapters.map((c) => {
+    const names = c.summary?.review
+      ? c.summary.review.modules.flatMap((m) => m.points.map((p) => p.name)).slice(0, 8).join('、')
+      : (c.summary?.key_points || []).map(pointText).join('；').slice(0, 120)
+    return `第 ${c.index} 章 ${c.title}${names ? `：${names}` : ''}`
+  })
+  const prompt = [`课程名：${courseTitle}`, '章节目录与各章要点：', ...lines, '', '请按系统提示的 JSON 结构输出课程复习框架。'].join('\n')
+  const raw = await collect(
+    llm.stream({
+      provider,
+      model,
+      system: FRAMEWORK_SYSTEM,
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+      maxTokens: 2400,
+      temperature: 0.3,
+      signal,
+    }),
+  )
+  const value = parseJsonObject(raw)
+  if (!value) throw new Error('复习框架 JSON 解析失败')
+  const goals = (Array.isArray(value.goals) ? value.goals : []).map((g) => String(g || '').trim()).filter(Boolean).slice(0, 6)
+  return {
+    theme: String(value.theme || '').trim().slice(0, 200),
+    goals,
+    summary: String(value.summary || '').replace(/\s+/g, ' ').trim().slice(0, 400),
+  }
+}
+
+/**
  * The model sometimes names the wrong language ("Python 异常处理" for a C++
  * chapter). Replace the foreign language token rather than prefixing it, so the
  * report and the Bilibili query both carry the course domain.
@@ -443,9 +495,7 @@ export async function summarizeChapter({ llm, provider, model, courseTitle, chap
 export function anchorKeywords(list, domain) {
   if (!domain) return list
   return list.map((raw) => anchorQuery(raw, domain)).filter(Boolean)
-}
-
-const GENERIC_KEYWORD = /^(摘要|一页摘要|目录|参考文献|附录|小结|总结|概述|引言|前言|致谢|封面|标题页|正文|本章|全文)$/
+}const GENERIC_KEYWORD = /^(摘要|一页摘要|目录|参考文献|附录|小结|总结|概述|引言|前言|致谢|封面|标题页|正文|本章|全文)$/
 
 function filterKeywords(list) {
   return (list || [])

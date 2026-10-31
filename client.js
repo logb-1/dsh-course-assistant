@@ -306,6 +306,13 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
               `页级 OCR：${job.ocr.pages}/${job.ocr.total} 页（${job.ocr.engine}${job.ocr.scanned ? '，扫描版' : ''}）· ${job.ocr.adopted} 页改用 OCR 文本`,
             )
           : null,
+        job.review && job.review.points
+          ? h(
+              'div',
+              { className: 'ca-phase', style: { marginTop: 4 } },
+              `复习资料：${job.review.points} 个知识点 · ${job.review.examples} 个实例 · ${job.review.exercises} 道习题`,
+            )
+          : null,
         job.domain
           ? h(
               'div',
@@ -564,6 +571,7 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
     function Panel() {
       const [files, setFiles] = useState([])
       const [withVideos, setWithVideos] = useState(true)
+    const [reviewStyle, setReviewStyle] = useState(false)
       const [job, setJob] = useState(null)
       const [phase, setPhase] = useState('idle')
       const [error, setError] = useState('')
@@ -701,7 +709,10 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ files: uploaded.map((u) => ({ id: u.id })), options: { withVideos } }),
+            body: JSON.stringify({
+              files: uploaded.map((u) => ({ id: u.id })),
+              options: { withVideos, reportStyle: reviewStyle ? 'review' : 'brief' },
+            }),
           })
           const data = await res.json()
           if (!data.ok) throw new Error(data.reason || '任务启动失败')
@@ -867,6 +878,17 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
                 { className: 'ca-opt' },
                 h('input', { type: 'checkbox', checked: withVideos, onChange: (e) => setWithVideos(e.target.checked), disabled: busy }),
                 '检索 B 站网课',
+              ),
+              h(
+                'label',
+                { className: 'ca-opt', title: '模块 → 知识点（K）→ 实例（E）→ 习题（Q）＋参考答案；token 约为普通版的 2-3 倍' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: reviewStyle,
+                  onChange: (e) => setReviewStyle(e.target.checked),
+                  disabled: busy,
+                }),
+                '复习资料版',
               ),
               h('span', { className: 'ca-sp' }),
               h(

@@ -2,6 +2,24 @@
 
 按时间倒序。每条只记：改了什么、证据/数字、踩了什么坑。
 
+## 2026-10-31 · 1.13.0 复习资料版（reportStyle: review）
+
+- 用户给了完整的复习资料提示词（分章分块、K/E/Q 编号、来源标签、先题后答、待确认），要求做成选项。
+- 新增 `core/review.js`：K/E/Q 的 JSON 契约 + `parseReview`（容错：别名键、标签归一、截断修复）
+  + `reviewKeyPoints`（把 K 点折算成旧版要点，证据核对/覆盖审计/B 站检索照旧）+ `reviewStats`。
+- `core/summarize.js`：`summarizeChapterReview`（maxTokens 8192，重试只加不减）与 `summarizeCourseReview`
+  （主题/目标/总结一次调用）；`core/json-repair.js` 抽出共享的 JSON 修复。
+- `core/report.js`：`style: 'review'` 时输出「复习框架（6 节）+ 分章复习资料（概览/模块-K/实例-E/习题-Q/
+  参考答案/小结）」；单章拿不到结构就退回普通摘要并标注，不丢章。
+- 页码不靠猜：单文件把 `【第 N 页】` 标记喂给模型，解析时按本章页范围校验，越界标「待确认」；多文件禁止写页码。
+- `index.js` / `client.js`：Config `reportStyle`、面板「复习资料版」勾选、`/run` 与 agent tool 都接受该参数，
+  进度卡显示「N 个知识点 · M 个实例 · K 道习题」。
+- 测试：`--unit` **47 项**（新增 3：解析/页码/截断、报告结构与先题后答、假模型端到端）、`--real` 11、
+  `e2e-fake`、client 契约全绿。
+- 坑：用 `Get-Content -Raw` + `Set-Content` 改 JS 里带反引号的模板字符串会被 PowerShell 吃掉，改文件只用
+  `edit`/`write` 工具（和 HANDOFF 第 5 条同一类坑，这次又踩了一次 README 才想起来）。
+- 未验证：真实模型下的复习资料质量（宿主里跑的仍是 1.12.0/1.11.1 代码，需重载插件后才能点勾选跑一次）。
+
 ## 2026-10-31 · 1.12.0 页级 OCR 分诊 + 三个静默 bug
 
 - `core/ocr-triage.js`（`planOcrPages` / `applyOcrPages`）+ `core/ocr-score.js`（成词率/可疑字符/碎片行打分）：

@@ -51,6 +51,9 @@ export const Config = Schema.object({
   images: Schema.string().default('ocr').description('幻灯片图片 OCR：ocr 读取图片文字，off 关闭'),
   imagesMax: Schema.natural().default(40).description('每份课件最多 OCR 的图片数'),
   coverage: Schema.string().default('auto').description('要点覆盖：auto 自动，fast 不分节提示（最省），thorough 逐节摘要（每章最多 4 次调用）'),
+  reportStyle: Schema.union([Schema.const('brief'), Schema.const('review')])
+    .default('brief')
+    .description('报告形态：brief 要点式学习报告；review 复习资料（模块/知识点/实例/习题+参考答案，token 约 2-3 倍）'),
   vision: Schema.string().default('').description('多模态模型（预留，留空关闭）'),
   domain: Schema.string().default('').description('强制课程领域（如 C++），留空自动识别'),
   ocrMaxPages: Schema.natural().min(1).max(400).default(60).description('OCR 重读页数上限（页级分诊选出的页，按文档顺序）'),
@@ -192,6 +195,7 @@ export function apply(ctx, config = {}) {
       engine: pick(raw.imagesEngine),
     },
     coverage: String(pick(raw.coverage) || pick(config.coverage) || 'auto'),
+    reportStyle: String(pick(raw.reportStyle) || pick(config.reportStyle) || 'brief'),
     vision: pick(raw.vision) || pick(config.vision) || '',
   })
 
@@ -483,6 +487,7 @@ export function apply(ctx, config = {}) {
           ocrEngines: await ocrStatus(),
           ocrMode: String(config.ocrMode || 'auto'),
           ocrPick: String(config.ocrPick || 'first'),
+          reportStyle: String(config.reportStyle || 'brief'),
           dataDir: store.dataDir,
           supported: [...SUPPORTED, '.ppt', '.doc', '.xls'],
           jobs: jobs.size,
@@ -676,6 +681,11 @@ export function apply(ctx, config = {}) {
           format: { type: 'string', enum: ['md', 'pdf', 'csv', 'json'], description: 'export 的格式，默认 md' },
           question: { type: 'string', description: 'ask 的问题（中文即可）' },
           withVideos: { type: 'boolean', description: '是否检索 B 站网课，默认 true' },
+          reportStyle: {
+            type: 'string',
+            enum: ['brief', 'review'],
+            description: 'brief 要点式学习报告（默认）；review 复习资料（模块/知识点/实例/习题+参考答案）',
+          },
         },
         required: ['action'],
         additionalProperties: false,
@@ -724,8 +734,8 @@ export function apply(ctx, config = {}) {
           if (!inputs?.length) return { ok: false, reason: restoreInputs(args.jobId).error || '原任务的上传文件已过期' }
           const chapterIndex = Number(args.chapterIndex) || 0
           const job = chapterIndex > 0
-            ? await makeRerunJob(previous, inputs, chapterIndex, optionsOf({ withVideos: args.withVideos }))
-            : await makeJob(inputs, optionsOf({ withVideos: args.withVideos }))
+            ? await makeRerunJob(previous, inputs, chapterIndex, optionsOf({ withVideos: args.withVideos, reportStyle: args.reportStyle }))
+            : await makeJob(inputs, optionsOf({ withVideos: args.withVideos, reportStyle: args.reportStyle }))
           return { ok: true, jobId: job.id, chapterIndex: chapterIndex || null, status: job.status }
         }
         if (args.action === 'status') {
@@ -802,7 +812,7 @@ export function apply(ctx, config = {}) {
           if (stat.size > MAX_UPLOAD) return { ok: false, reason: `文件过大（>60MB）：${path}` }
           inputs.push({ path, name: basename(path) })
         }
-        const job = await makeJob(inputs, optionsOf({ withVideos: args.withVideos }))
+        const job = await makeJob(inputs, optionsOf({ withVideos: args.withVideos, reportStyle: args.reportStyle }))
         // wait for completion so the agent gets the result in one call
         const deadline = Date.now() + 150000
         let current = jobs.get(job.id)

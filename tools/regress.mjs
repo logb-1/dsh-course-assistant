@@ -50,6 +50,8 @@ import { ocrPdf, ocrPdfDeep, registerOcrEngine } from '../core/ocr.js'
 import { buildTopicProfile } from '../core/topic.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, readImageTexts, rerunChapter, runPipeline } from '../core/pipeline.js'
+import { parseReview, reviewKeyPoints, reviewStats } from '../core/review.js'
+import { buildReport } from '../core/report.js'
 
 const ARGV = process.argv.slice(2)
 const QUIET = ARGV.includes('--quiet')
@@ -877,6 +879,220 @@ check('OCR 文本后处理：拆词合并、IEEE 纠正、全角转半角、偏�
   // 中文正文里的空格不该被当成代码处理，也不该被吃掉语义
   assert(fixOcrArtifacts('第 3 章 程序的机器级表示').includes('第 3 章'), '普通中文行应原样保留')
   return '4 类纠正均生效'
+})
+
+/* ------------------------------ review document ------------------------------ */
+
+/** A model-shaped review object, deliberately with one out-of-range page. */
+function sampleReview(overrides = {}) {
+  return {
+    chapter: '第 1 章 供给与需求',
+    keywords: ['微观经济学 需求弹性'],
+    overview: {
+      question: '研究价格与数量的关系',
+      why: '为后续弹性与市场结构打基础',
+      abilities: ['画供需曲线', '判断均衡变化'],
+      links: '先修：无；后续：弹性',
+    },
+    modules: [
+      {
+        name: '1.1 需求与供给',
+        points: [
+          {
+            id: 'K1.1',
+            name: '需求定律',
+            definition: '其他条件不变时，价格上升需求量下降',
+            plain: '越贵买得越少',
+            conditions: '其他条件不变',
+            mastery: '理解',
+            formula: 'Qd = f(P)，f′ < 0',
+            links: '用于解释均衡价格变化',
+            pitfalls: '价格以外的因素引起的移动不是沿曲线移动',
+            source: '第 2 页',
+            tag: '原文',
+            quote: '其他条件不变时价格上升需求量下降',
+          },
+        ],
+      },
+    ],
+    examples: [
+      {
+        id: 'E1.1',
+        name: '猪肉涨价后的购买量',
+        source: '第 3 页',
+        background: '猪肉价格从 20 元涨到 30 元',
+        points: ['K1.1'],
+        purpose: '演示沿需求曲线移动',
+        steps: '1. 画需求曲线；2. 标出两点',
+        result: '购买量下降',
+        transfer: '任何价格变动都先看是沿曲线还是曲线移动',
+        pitfalls: '把收入变化当成价格变化',
+      },
+    ],
+    exercises: [
+      { id: 'Q1.1', origin: 'PPT 原题', stem: '价格上升时需求量如何变化？', points: ['K1.1'], type: '简答', difficulty: '易' },
+      { id: 'Q1.2', origin: '补充练习', stem: '收入上升且价格不变时曲线如何移动？', points: ['K1.1'], type: '简答', difficulty: '中' },
+    ],
+    answers: [{ id: 'Q1.1', text: '需求量下降（沿曲线向左上移动）', note: '参考解答，非课件原答案' }],
+    summary: {
+      oneLine: '价格决定数量，均衡由交点给出',
+      logic: ['需求', '供给', '均衡'],
+      remember: ['需求定律'],
+      understand: ['均衡的形成'],
+      tasks: ['画出涨价后的变化'],
+      priority: [{ what: '需求定律', why: '后续弹性以此为基础' }],
+    },
+    ...overrides,
+  }
+}
+
+check('复习资料：解析模型 JSON、校验页码、容忍截断', () => {
+  const raw = JSON.stringify(sampleReview())
+  const review = parseReview(raw, { chapter: { index: 1 }, pages: [2, 3] })
+  assert(review, '正常 JSON 解析失败')
+  assert(review.modules[0].points[0].id === 'K1.1', `知识点 id 丢了：${JSON.stringify(review.modules[0].points[0])}`)
+  assert(review.modules[0].points[0].tag === '原文', '标签没有归一化')
+  assert(review.modules[0].points[0].sourceOk === true, '本章范围内的页码应判为有效')
+  assert(review.exercises[0].origin === 'PPT 原题' && review.exercises[1].origin === '补充练习', '题源分类不对')
+  const stats = reviewStats(review)
+  assert(stats.points === 1 && stats.exercises === 2 && stats.answered === 1, `统计不对：${JSON.stringify(stats)}`)
+  assert(stats.byTag['原文'] === 1, '来源标签统计不对')
+
+  // 页码不在本章范围 → 保留但标待确认，报告里会写出来
+  const outside = parseReview(
+    JSON.stringify({ ...sampleReview(), modules: [{ name: 'm', points: [{ ...sampleReview().modules[0].points[0], source: '第 99 页' }] }] }),
+    { chapter: { index: 1 }, pages: [2, 3] },
+  )
+  assert(outside.modules[0].points[0].sourceOk === false, '越界页码没有标出来')
+
+  // 被 maxTokens 截断的回包也要留下已经写好的模块
+  const truncated = raw.slice(0, Math.floor(raw.length * 0.55))
+  const salvaged = parseReview(truncated, { chapter: { index: 1 } })
+  assert(salvaged && salvaged.modules.length >= 1, '截断的 JSON 没有救回来')
+
+  // 没有任何知识点 → null，调用方退回普通摘要
+  assert(parseReview('{"chapter":"x"}', {}) === null, '空结构应返回 null')
+  assert(parseReview('不是 JSON', {}) === null, '非 JSON 应返回 null')
+  return `K=${stats.points} E=${stats.examples} Q=${stats.exercises}（${stats.answered} 道有答案）`
+})
+
+check('复习资料：报告结构（复习框架、K/E/Q、先题后答、来源标签）', () => {
+  const review = sampleReview()
+  const stats = reviewStats(review)
+  const chapters = [
+    {
+      index: 1,
+      title: '供给与需求',
+      pages: [1, 2, 3],
+      reviewStats: stats,
+      summary: {
+        review,
+        key_points: reviewKeyPoints(review),
+        confidence: { tier: 'verified', overlap: 0.9, faithfulness: 1, evidence: { checked: 1, exact: 1, fuzzy: 0, short: 0, missing: 0, ratio: 1 } },
+      },
+    },
+    // a chapter whose review JSON failed must still appear, as a brief section
+    { index: 2, title: '弹性', pages: [4], summary: { key_points: [{ text: '需求价格弹性等于需求量变化百分比除以价格变化百分比' }] } },
+  ]
+  const md = buildReport({
+    courseTitle: '微观经济学',
+    files: [{ name: '供给与需求.pdf', kind: 'pdf', pages: 4 }],
+    chapters,
+    courseSummary: '课程总结',
+    style: 'review',
+    review: { modules: 1, points: 1, examples: 1, exercises: 2, answered: 1, byTag: { 原文: 1 } },
+    framework: { theme: '价格与数量', goals: ['理解需求定律', '会算弹性'], summary: '课程总结' },
+    meta: {
+      generatedAt: '2026-10-31 13:00',
+      warnings: ['OCR 上限：还有 2 页没有重读'],
+      ocr: { pages: 2, total: 4, deferred: 2, engine: 'windows', adopted: 2 },
+    },
+  })
+  assert(md.startsWith('# 《微观经济学》复习资料'), `标题不对：${md.split('\n')[0]}`)
+  for (const needle of ['## 一、复习框架', '### 1. 已读取的文件', '### 2. 课程主题与学习目标', '### 4. 章间依赖关系', '### 5. 建议复习顺序', '### 6. 待确认与资料缺口']) {
+    assert(md.includes(needle), `缺少复习框架小节：${needle}`)
+  }
+  assert(md.includes('## 二、分章复习资料'), '缺少分章复习资料')
+  assert(md.includes('**K1.1 需求定律**〔原文〕（第 2 页）'), '知识点行格式不对')
+  assert(md.includes('#### E1.1 猪肉涨价后的购买量（第 3 页）'), '实例行格式不对')
+  assert(md.includes('#### 自测题') && md.includes('#### 参考答案'), '缺少自测题/答案小节')
+  const qAt = md.indexOf('**Q1.1**')
+  const answerAt = md.indexOf('#### 参考答案')
+  assert(qAt >= 0 && qAt < answerAt, '答案出现在了题目之前（自测失效）')
+  assert(md.includes('参考解答，非课件原答案'), '参考答案没有标注')
+  assert(md.includes('课件未给答案'), '缺答案的题没有提示')
+  assert(md.includes('#### 本章小结'), '缺少本章小结')
+  assert(md.includes('待确认与资料缺口') && md.includes('2 页没有重读'), '缺口没有把 OCR 顺延写进去')
+  // 第 2 章没拿到复习结构：退回普通摘要而不是消失
+  assert(md.includes('第 2 章 弹性') && md.includes('未能生成复习结构'), '降级章节被丢掉了')
+  return `${md.split('\n').length} 行报告`
+})
+
+check('复习资料版：假模型端到端生成 K/E/Q 与参考答案', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ca-review-'))
+  try {
+    const store = createStore(dir)
+    const filler = (sentence, times) => Array.from({ length: times }, () => sentence).join('')
+    const body = [
+      '# 微观经济学',
+      '## 第一章 供给与需求',
+      filler('需求量随价格上升而下降，供给量随价格上升而增加。均衡价格由两条曲线的交点决定。', 8),
+      '## 第二章 弹性',
+      filler('需求价格弹性等于需求量变化百分比除以价格变化百分比。弹性大于一称为富有弹性。', 8),
+    ].join('\n\n')
+    const file = join(dir, 'course.md')
+    writeFileSync(file, body, 'utf8')
+    const streamOf = (text) =>
+      (async function* () {
+        yield { type: 'text-delta', text }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })()
+    const llm = {
+      provider: 'test',
+      model: 'fake-review',
+      stream(options) {
+        const system = options.system || ''
+        const prompt = options.messages?.[0]?.content?.[0]?.text || ''
+        if (system.includes('复习框架')) {
+          return streamOf(JSON.stringify({ theme: '价格与数量', goals: ['理解需求定律', '会算弹性'], summary: '全课程总结' }))
+        }
+        if (system.includes('复习资料')) {
+          const index = Number((/本章：第 (\d+) 章/.exec(prompt) || [])[1]) || 1
+          const base = sampleReview()
+          const review = {
+            ...base,
+            modules: [{ name: base.modules[0].name, points: [{ ...base.modules[0].points[0], id: `K${index}.1` }] }],
+            examples: [{ ...base.examples[0], id: `E${index}.1` }],
+            exercises: [{ ...base.exercises[0], id: `Q${index}.1` }],
+            answers: [{ ...base.answers[0], id: `Q${index}.1` }],
+          }
+          return streamOf(JSON.stringify(review))
+        }
+        return streamOf(
+          JSON.stringify({ chapter: 'x', key_points: [{ text: '占位要点', evidence: '占位' }], important: [], difficult: [], keywords: ['微观经济学 弹性'] }),
+        )
+      },
+    }
+    const job = await runPipeline({
+      id: 'review-e2e',
+      inputs: [{ path: file, name: 'course.md' }],
+      options: { withVideos: false, knowledge: false, concurrency: 1, reportStyle: 'review' },
+      deps: { store, bili: null, llm },
+      emit: () => {},
+    })
+    assert(job.status === 'done', `任务失败：${job.error || job.status}`)
+    assert(job.style === 'review', `job.style 不对：${job.style}`)
+    assert(job.chapters.every((c) => c.summary?.review), '有章节没有 review 结构')
+    assert(job.review?.points === job.chapters.length, `课程级统计不对：${JSON.stringify(job.review)}`)
+    const md = readFileSync(job.reportPath, 'utf8')
+    assert(md.includes('## 一、复习框架') && md.includes('## 二、分章复习资料'), '报告不是复习资料结构')
+    assert(md.includes('K1.1') && md.includes('K2.1'), '章节知识点编号没有按章生成')
+    assert(md.includes('Q1.1') && md.includes('Q2.1'), '习题编号没有按章生成')
+    assert(md.includes('全课程总结'), '复习框架没有写进课程总结')
+    return `${job.chapters.length} 章 / K${job.review.points} E${job.review.examples} Q${job.review.exercises}`
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 /* -------------------------- OCR triage and picking -------------------------- */

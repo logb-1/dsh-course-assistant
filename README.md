@@ -14,7 +14,7 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 | 区域 | 内容 |
 |---|---|
 | 拖拽区 | 拖入或点击选择，支持 `.pptx .pdf .docx .md .txt`，一次最多 12 个（单文件 ≤60MB） |
-| 选项 | 「检索 B 站网课」可关闭（关掉后不产生任何站外请求） |
+| 选项 | 「检索 B 站网课」可关闭（关掉后不产生任何站外请求）；「复习资料版」切换报告形态 |
 | 进度 | 解析 → 识别目录 → 逐章总结（边出边显示）/ 并行检索 → 生成总结 → 报告 |
 | 标签页 | 知识点（每章要点、⭐重点、⚠️难点、关键词）· 目录 · B 站网课 · 报告（渲染 + 下载 MD/PDF/复制） |
 
@@ -35,6 +35,34 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 
 附录不会为空：检索被风控或没有相关结果时，该行退化为
 `https://search.bilibili.com/all?keyword=<URL编码关键词>` 搜索入口。
+
+## 1.13.0 新增：复习资料版（分章分块 + 知识点 + 实例 + 自测）
+
+面板上多了一个 **「复习资料版」** 勾选（配置项 `reportStyle: 'review'`）。勾上以后，报告
+不再是「每章 6 条要点」，而是按复习思路组织：
+
+| 结构 | 内容 |
+|---|---|
+| **复习框架**（报告开头） | 已读取的文件与可读范围 / 课程主题与学习目标 / 章节目录与课件页范围 / 章间依赖 / 建议复习顺序 / 待确认与资料缺口 |
+| **每章** | 本章概览 → 模块与知识点（**K1.1** 编号）→ 课件实例（**E1.1**）→ 自测题（**Q1.1**）→ 参考答案 → 本章小结 |
+| **知识点** | 定义/结论、通俗解释、关键条件、掌握要求（记忆/理解/应用）、公式与用法、知识联系、常见误区 |
+| **来源** | 每个知识点与实例都带〔原文 / 整理 / 补充 / 待确认〕标签 + 页码；页码越界会被标成「不在本章范围，待确认」 |
+| **实例** | 背景 → 对应知识点 → 要说明什么 → 分析步骤 → 结论 → 可迁移方法 → 易错点 |
+| **习题** | **先题目后答案**（便于自测）；课件没给答案时写「课件未给答案」；模型自己求解的标「参考解答，非课件原答案」 |
+
+实现要点：
+
+- `core/review.js`：复习资料的 JSON 契约与解析（`parseReview`），把 K 点折算成旧版要点，
+  使证据核对、覆盖率审计、关键词与 B 站检索照旧工作；`reviewStats` 出「N 个知识点 / M 个实例 / K 道习题」。
+- `core/summarize.js`：`summarizeChapterReview`（maxTokens 8192，重试只加不减）+ `summarizeCourseReview`
+  （课程主题/目标/总结一次调用）。
+- 页码不是猜的：单文件时给模型的是带 `【第 N 页】` 标记的原文，解析时按本章页范围校验；
+  多文件（页码会串）时提示词明确禁止写页码。
+- 拿不到复习结构（模型回包被截断/不可解析）时，该章自动退回普通要点摘要并在报告里注明，不会消失。
+- `core/json-repair.js` 抽出共享的 JSON 修复（截断回包救回已写好的部分）。
+
+**成本**：复习资料版每章输出约为普通版的 3-5 倍，`maxTokens` 固定 8192；用 MAX thinking 模型时
+推理 token 也吃这份预算，章节多时整体耗时明显上升。`reportStyle` 默认仍是 `brief`。
 
 ## 1.12.0 新增：页级 OCR 分诊（只读读不出来的那几页）
 
@@ -334,6 +362,7 @@ install_bundle(target="github:logb-1/dsh-course-assistant")
 | `ocrPython` | `python` / `python3` | rapidocr 用的解释器 |
 | `images` / `imagesMax` | `ocr` / `40` | 幻灯片内嵌图片 OCR 开关与每份上限 |
 | `coverage` | `auto` | `fast` 不分节提示（省 token）/ `auto` / `thorough` 逐节摘要（每章最多 4 次调用） |
+| `reportStyle` | `brief` | `brief` 要点式学习报告；`review` 复习资料（K/E/Q + 参考答案，token 约 2-3 倍） |
 | `spacingMs` | `1000` | B 站请求间隔（≥1000） |
 | `keepUploadsDays` | `7` | 上传文件保留天数（1–90），仍被任务引用的不会被删 |
 
@@ -371,6 +400,8 @@ course-assistant/
 │   ├── media.js          # pptx 内嵌图片抽取（a:blip → rels → ppt/media）
 │   ├── bili.js           # WBI 签名搜索 + 评分排序 + 合集识别 + 24h 缓存 + 风控降级
 │   ├── summarize.js      # 固定 JSON 提示词、并发、JSON 截断修复、本地兜底
+│   ├── review.js         # 复习资料版：K/E/Q 契约、解析、页码校验、统计
+│   ├── json-repair.js    # 模型回包的 JSON 提取与截断修复（两种报告共用）
 │   ├── sections.js       # 分节 + 每节保底选段
 │   ├── audit.js          # 要点覆盖率审计
 │   ├── keywords.js       # 关键词四源融合
@@ -441,7 +472,7 @@ course-assistant/
 | Host 路由 | `GET /course-assistant/health` → 200 `{llm:true,pdf:true}`；`upload`→`run`→`job`→`report(md)`→`report(pdf)` 全链路通过（`tools/smoke.mjs`） |
 | Client 槽位 | `main` key `course-assistant` active；`sidebar.panellist` id `course-assistant` active；`conversation.composer.dock` id `course-assistant-dock` active |
 | 语法 | `node --check` 全部通过（index.js / client.js / core/*.js） |
-| 回归 | `node tools/regress.mjs` 共 55 项：`--unit` **44 项**（合成 PDF / 扫描件、可信度/证据、CTM 字号、分章指标、单章重跑、同名章、PPTX 节映射、导出结构、OCR 分诊/择优/页号/图片缓存）任何机器可跑；`--real` 11 项需要课件；`--strict` 下 unit 缺文件即失败 |
+| 回归 | `node tools/regress.mjs` 共 58 项：`--unit` **47 项**（合成 PDF / 扫描件、可信度/证据、CTM 字号、分章指标、单章重跑、同名章、PPTX 节映射、导出结构、OCR 分诊/择优/页号/图片缓存、复习资料解析与报告结构）任何机器可跑；`--real` 11 项需要课件；`--strict` 下 unit 缺文件即失败 |
 | 真实课件 | `L12`（67 页 PDF）：OCR 分诊只读 26 页，正文 5 502 → 8 214 字；`实验1-高质量编程基础.pptx`：2 张图全读、186 字、2/14 个提示词带上 `[图片]` |
 | CI | `.github/workflows/ci.yml`：Windows + Ubuntu 矩阵跑 `--unit --strict` 与 client 契约测试；package job 校验 tarball 清单（防 `files` 漏文件）与"版本号不许写死" |
 | 分章质量 | `tools/gold/*.json` + `tools/segment-metrics.mjs`（windowdiff / 边界 F1，±1 页容差）；`deck-800`：章 10/11、windowdiff **0.061**、F1 **0.947** |
@@ -457,6 +488,10 @@ course-assistant/
 - **深色代码截图**仍可能把 `0` 认成 `9`；规则层解决不了，需要视觉模型（`vision` 配置项已预留）。
 - **加密 PDF** 直接拒绝；PDF 里 Type0 字体缺 `/ToUnicode`、又没有嵌入 cmap 时该页文字解不出来。
 - **纯图页**只能拿到 OCR 出来的文字，图表的箭头/连线读不到。
+- **复习资料版**里的「补充」内容、参考答案和部分通俗解释是模型写的，不是课件原文；用到公式或数字时请对照原页。
+  页码引用只在**单份课件**时可靠（多文件合并时提示词会禁止写页码），报告里越界页码会标「待确认」。
+- **复习资料版成本更高**：每章输出约为普通版的 3-5 倍（`maxTokens` 8192），用 MAX thinking 模型时推理 token
+  也吃这份预算，章节多时耗时会明显上升。
 - **B 站是关键词检索，不是语义检索**：对「研究汇报」型课件（本示例 PPT 讲贸易政策）噪声明显，
   报告里同时给出搜索链接；标准课程（如 `复习&自学大纲`）命中率明显更好。风控时整轮降级为链接。
 - **系列课推荐**依赖标题里的「合集/全套/教程」特征，找不到合格项时只给搜索入口，不硬凑。
