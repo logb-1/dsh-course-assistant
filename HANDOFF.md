@@ -667,7 +667,7 @@ OCR 出「关系 / 表达式 / 2147483647 > …」等真实内容；`ocrImage` �
 
 **测试**：`--unit` **37 项**（新增 OCR 后处理四类纠正），real 9、e2e、契约全绿。
 
-## 二十四、2026-10-31 交接速览（读这一节就够）
+## 二十四、2026-10-31 交接速览（读这一节就够）**← 已被第二十五节取代，看 §25**
 
 ### 状态
 - 版本 **1.11.1**；npm `latest = 1.11.1`；GitHub `main` 同步，tag `v1.11.1`。
@@ -718,3 +718,87 @@ ocrMaxPages / ocrEngine / ocrPython / provider / model / spacingMs / keepUploads
 ### 运维提醒
 - 发布需要 npm token **带 Bypass 2FA**；聊天里出现过两个 token，应撤销重建。
 - GitHub 443 间歇不通，`git push` 失败时重试即可（`api.github.com` 与 npm registry 通常仍可用）。
+
+## 二十五、2026-10-31 · 1.12.0 交接速览（读这一节就够）
+
+### 状态
+
+| 项 | 值 |
+|---|---|
+| 本地版本 | **1.12.0**（`package.json`） |
+| npm | **已发布 1.12.0**（45 文件 / 447 KB unpacked），`latest = 1.12.0` |
+| GitHub | `main` = `ba3e7b7`，tag `v1.12.0` 已推 |
+| 测试 | `--unit` **43 项**、`--real` **11 项**、`tools/e2e-fake.mjs` 1 项、client 契约，全绿 |
+| 宿主中的插件 | **仍是 1.11.1**：本次会话没有 plugin_manager 工具，需要你在 Plugins 页关/开一次（或重启 DSH），`health.version` 才会变成 1.12.0 |
+
+### 这一版做了什么
+
+**页级 OCR 分诊**（`core/ocr-triage.js` + `core/ocr-score.js`）：解析后给每页文本层打分（字数/可疑字符/成词率），
+只把空页、几乎没字、字形乱码的页交给 OCR；其余页保持原文本层。每页各自择优，**可读页不会被 OCR 覆盖**。
+默认行为变了：PDF 现在默认就会做这一步（`ocrMode: 'auto'`），`all` = 旧的整份重读，`off` = 关闭。
+
+实测 `L12_C10_异常与断言.pdf`：只读 26/67 页、6.7 秒，25 页换成 OCR 文本，正文 5 502 → **8 214 字**。
+`L10` 51 页里 25 页需要重读（约 25 秒），这是默认成本；嫌慢就 `ocrMode: 'off'`。
+
+**同一轮修掉的三个静默 bug**（都表现为"成功、但什么都没做"）：
+
+1. `core/pipeline.js#prepareDocs` 引用了不存在的 `options` → **1.11.1 起幻灯片图片 OCR 从未执行**，
+   异常被 try/catch 吞掉，只在警告里留一行「图片 OCR 失败」。识别逻辑已抽成导出的 `readImageTexts()`，
+   python 路径由 OCR 配置传入。
+2. `store.readOcr()` 只返回 `{pages}` 负载 → 图片 OCR 的 `{text}` 缓存**从未命中**，重跑重复识别。
+3. **只有图片的页被整页丢弃**：`L12` 真实 67 页（WinRT `pageCount` 与 PyMuPDF 一致），此前只解析出 54 页，
+   13 页纯图片幻灯片从未进过报告，且之后页码全部错位（`（p.12）` 指错页、图片文字挂错幻灯片）。
+   现在：有图即内容、页号不压缩；pptx 按 `p:sldIdLst` 真实顺序编号，`media.js` 用同一顺序找图片。
+
+### 新增/改动的模块
+
+| 文件 | 职责 |
+|---|---|
+| `core/ocr-triage.js` | `planOcrPages`（哪些页要读、扫描件判定、上限与顺延）+ `applyOcrPages`（逐页择优） |
+| `core/ocr-score.js` | `scoreText` / `textProblem`：成词率 0.55 + 反乱码 0.30 + 反碎片 0.15 |
+| `core/ocr.js` | `ocrPdfDeep`（页子集 + 双引擎择优）、`ocrPdf`（兼容包装）、页号不再重排 |
+| `core/ocr.ps1` | `-Pages "3,17,18"` |
+| `core/rapidocr.py` | `--pages`、逐页 `score`（Mean 置信度） |
+| `core/pdf.js` | 每页 `images` 计数；空页也保留（页号真实） |
+| `core/ooxml.js` | 纯图片幻灯片保留、按 `p:sldIdLst` 顺序编号、每页 `images` 计数 |
+| `core/media.js` | 显示顺序映射（`slide7.xml` 不一定是第 7 张） |
+| `core/text.js` | `cleanDoc` 不再压缩页号，保留有图的页 |
+
+### 配置面（`Config`，1.12.0 后）
+
+`dataDir / concurrency / withVideos / images / imagesMax / coverage / vision / domain / ocrMode / ocrPick /
+ocrMaxPages / ocrEngine / ocrPython / provider / model / spacingMs / keepUploadsDays`
+
+- `ocrMode`: `auto`（默认，只读弱页）/ `all`（整份重读）/ `off`
+- `ocrPick`: `first`（默认）/ `best`（低分页再用第二个引擎复读取高分，耗时翻倍；需要两个引擎都可用）
+
+### 命令
+
+```powershell
+node tools/regress.mjs --unit --strict
+node tools/regress.mjs --real
+node tools/e2e-fake.mjs
+node tools/client-contract.mjs
+node tools/try-ocr-triage.mjs "C:\path\lecture.pdf"          # 看分诊计划（不加 --run 不跑 OCR）
+node tools/try-ocr-triage.mjs "C:\path\lecture.pdf" --run 3   # 顺便真读 3 页
+node tools/ocr-e2e.mjs "C:\path\lecture.pdf" auto             # 整条流水线（假模型）
+node tools/img-e2e.mjs "C:\path\deck.pptx"                    # 图片 OCR 链路
+```
+
+### 已知限制 / 还没做
+
+- **深色代码截图**仍可能把 `0` 认成 `9`；要 VLM（`vision` 配置项仍只是占位，未接线）。
+- **字形乱码但字数够多的页**（L12 的 `#includ fstrea`，一页 100–200 字）不会被 `auto` 选中：打分看的是
+  「像不像字」，看不出「是不是被截断的代码」。这类整份文件建议 `ocrMode: 'all'`。
+- **RapidOCR 在本机不可用**：PATH 上的 `python` 是 Windows Store 占位程序，`health.ocrEngines` 里
+  `rapidocr.available=false`。要用就配 `ocrPython` 指向装了 `pymupdf` + `rapidocr_onnxruntime` 的解释器。
+- 分诊会增加默认耗时（L10 51 页 → 约 25 秒 OCR），这是换取图片页内容的代价；`ocrMode: 'off'` 可关。
+- 历史面板的「筛选/删除」、看板交互仍未做；BKT 按用户要求搁置。
+- 视觉回归 `tests/visual.spec.mjs` 本轮没跑（需要 `dsh web` 的带 token 地址）。
+
+### 下一轮候选
+
+1. `vision` 模式接 VLM（dots.ocr / PaddleOCR-VL），解决深色代码截图与图表结构。
+2. 分诊加一个「文本层被截断」信号（行内操作符密度 / 双栏残片），把 L12 那类页也纳入 auto。
+3. 历史面板筛选/删除 + 看板交互。
+4. 给 `rapidocr.py` 输出行级框与置信度，`ocrPick: best` 才能按行合并而不是整页二选一。

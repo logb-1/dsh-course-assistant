@@ -2,6 +2,31 @@
 
 按时间倒序。每条只记：改了什么、证据/数字、踩了什么坑。
 
+## 2026-10-31 · 1.12.0 页级 OCR 分诊 + 三个静默 bug
+
+- `core/ocr-triage.js`（`planOcrPages` / `applyOcrPages`）+ `core/ocr-score.js`（成词率/可疑字符/碎片行打分）：
+  先给每页文本层打分，只把空页、几乎没字、字形乱码的页交给 OCR；每页各自择优，可读页不被覆盖。
+- 引擎支持按页读取：`ocr.ps1 -Pages`、`rapidocr.py --pages`、RapidOCR 逐页报置信度；`ocrPdfDeep` 可对低分页
+  调第二个引擎复读并取高分（`ocrPick: best`，默认 `first`）。
+- Config 新增 `ocrMode`（auto/all/off，默认 auto）与 `ocrPick`；去重键纳入 OCR 设置。
+- **修复三个"报成功、没干活"的 bug**：
+  1. `prepareDocs` 引用了不存在的 `options` → 1.11.1 起幻灯片图片 OCR 从未执行（异常被 try/catch 吞掉）；
+  2. `store.readOcr()` 只认 `{pages}` → 图片 OCR 缓存从未命中；
+  3. PDF/PPTX 里只有图片的页被整页丢弃 → **L12 实际 67 页，之前只解析出 54 页**（13 页纯图片幻灯片
+     从未进报告），且后面的页码全部错位。现在有图即内容、页号不压缩；pptx 按 `p:sldIdLst` 顺序编号，
+     `media.js` 也用同一顺序找图片。
+- 实测：`L12`（67 页）分诊只读 26 页、6.7 秒，25 页换成 OCR 文本，正文 5 502 → **8 214 字**，成词率 0.80；
+  `实验1-高质量编程基础.pptx` 两张图全读（186 字，2/14 个提示词带 `[图片]`）。
+- 测试：`--unit` **43 项**（新增 6：分诊两种模式、扫描件上限、择优不覆盖可读页、页号不重排、双引擎择优、
+  图片 OCR 缓存与 python 透传）、`--real` **11 项**（新增：67 页不丢图片页、真实课件分诊 ≤60%）、
+  `e2e-fake`、client 契约全绿。
+- 发布：npm **1.12.0**（45 个文件 / 447 KB unpacked，新模块都在包里），`latest` 已更新；
+  GitHub `main` = `ba3e7b7`，tag `v1.12.0`。
+- 坑：`Select-Object -First N` 截断原生命令输出会让 PowerShell 报 exit code 1（不是命令失败）；
+  npm 新版本号约 40 秒后才能在 `/<pkg>/<version>` 查到。
+- 环境问题：`python` 在 PATH 上只有 Windows Store 的占位程序，`rapidocr` 引擎因此报 `available:false`
+  （需要在配置里用 `ocrPython` 指向真的解释器）。
+
 ## 2026-10-31 · 交接（版本 1.11.1）
 
 - 当前状态：npm `latest = 1.11.1`，GitHub `main` 与远端同步，tag `v1.11.1`。
