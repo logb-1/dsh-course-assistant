@@ -9,14 +9,35 @@
  * already grouped locally.
  */
 import { cleanTerm, isGeneric, tfidfTerms } from './terms.js'
+import { cjkRatioOf, cleanTitle, hasChapterPrefix, titleScore } from './titles.js'
 
 const CHAPTER_RE = /^(?:第\s*[一二三四五六七八九十百\d]+\s*[章节讲部]|chapter\s*\d+|part\s*[一二三四五六七八九十\d]+)/i
 const SECTION_MARK_RE = /^§\s*(\d{1,2})\s*[·:：\-–—]\s*(.+)$/
+const CN_TOP_RE = /^[★☆\s•·\-—]*[一二三四五六七八九十]+\s*[、.．]\s*\S/
+const CH_TOP_RE = /^[★☆\s•·\-—]*第\s*[一二三四五六七八九十百\d]+\s*[章节讲部]\s*\S/
 const CHUNK_PAGES = 5
 const MAX_CHAPTERS = 22
 const MAX_CHAPTER_CHARS = 14000
+/** A chapter shorter than this is folded into its neighbour (titles, not pages, split). */
+const MIN_CHAPTER_CHARS = 500
+/** Only start a new chapter once the current one is long enough to be worth it. */
+const TITLE_CHANGE_CHARS = 1200
 
 const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim()
+
+const charsOf = (pages) => pages.reduce((n, p) => n + (p.text || '').length, 0)
+
+/** A page title is usable when it passes the vetoes in core/titles.js. */
+const usableTitle = (page) => {
+  const t = cleanTitle(page?.title)
+  if (!t) return ''
+  // normalisePageTitles already scored this page with the document context
+  // (Chinese-vs-code ratio); trust that instead of re-scoring blind
+  const scored = Number(page?.titleScore)
+  if (Number.isFinite(scored) && scored > 0) return scored >= 0.55 ? t : ''
+  return titleScore(t).score >= 0.55 ? t : ''
+}
+
 
 function cap(text) {
   const t = String(text || '').trim()
@@ -111,38 +132,44 @@ function chaptersFromHeadingSize(doc) {
   })
 }
 
-function chaptersFromPages(doc) {
-  const pages = doc.pages
-  // 1) explicit per-page section marks (§ 03 · 理论框架)
+/** Explicit per-page section marks (§ 03 · 理论框架); null when they are rare. */
+function chaptersFromSectionMarks(doc) {
+  const pages = doc.pages || []
   const marks = pages.map((p) => {
-    for (const line of p.text.split('\n').slice(0, 6)) {
+    for (const line of String(p.text || '').split('\n').slice(0, 6)) {
       const hit = sectionLabel(line)
       if (hit) return hit
     }
     return null
   })
   const marked = marks.filter(Boolean)
-  if (marked.length >= Math.max(2, Math.ceil(pages.length * 0.4))) {
-    const groups = []
-    for (let i = 0; i < pages.length; i++) {
-      const mark = marks[i]
-      const key = mark ? mark.num : groups.length ? groups[groups.length - 1].key : -1
-      const last = groups[groups.length - 1]
-      if (last && last.key === key) {
-        last.pages.push(pages[i])
-        if (mark && !last.name) last.name = mark.name
-      } else {
-        groups.push({ key, name: mark?.name || '', pages: [pages[i]] })
-      }
+  if (marked.length < Math.max(2, Math.ceil(pages.length * 0.4))) return null
+  const groups = []
+  for (let i = 0; i < pages.length; i++) {
+    const mark = marks[i]
+    const key = mark ? mark.num : groups.length ? groups[groups.length - 1].key : -1
+    const last = groups[groups.length - 1]
+    if (last && last.key === key) {
+      last.pages.push(pages[i])
+      if (mark && !last.name) last.name = mark.name
+    } else {
+      groups.push({ key, name: mark?.name || '', pages: [pages[i]] })
     }
-    return groups.map((g, i) => ({
-      title: g.name || chapterTitleFor(g.pages, i),
-      source: g.key >= 0 ? `§ ${String(g.key).padStart(2, '0')}` : '',
-      pages: g.pages.map((p) => p.index),
-      subs: g.pages.map((p) => p.title).filter(Boolean),
-      text: cap(g.pages.map((p) => p.text).join('\n\n')),
-    }))
   }
+  return groups.map((g, i) => ({
+    title: g.name || chapterTitleFor(g.pages, i),
+    source: g.key >= 0 ? `§ ${String(g.key).padStart(2, '0')}` : '',
+    pages: g.pages.map((p) => p.index),
+    subs: g.pages.map((p) => p.title).filter(Boolean),
+    text: cap(g.pages.map((p) => p.text).join('\n\n')),
+  }))
+}
+
+function chaptersFromPages(doc) {
+  const pages = doc.pages || []
+  // 1) explicit per-page section marks (§ 03 · 理论框架)
+  const byMarks = chaptersFromSectionMarks(doc)
+  if (byMarks) return byMarks
 
   // 2) chapter-like slide titles (第3章 / Chapter 3)
   // A header repeated on every page must NOT open a chapter per page: only a
@@ -165,7 +192,7 @@ function chaptersFromPages(doc) {
     }
     if (starts[0] > 0) groups[0] = [...pages.slice(0, starts[0]), ...groups[0]]
     return groups.map((g, i) => ({
-      title: norm(g[0].title) || chapterTitleFor(g, i),
+      title: chapterTitleFor(g, i),
       source: '',
       pages: g.map((p) => p.index),
       subs: g.map((p) => p.title).filter(Boolean),
@@ -203,8 +230,9 @@ function chaptersByChars(doc) {
   const flush = () => {
     if (!current.length) return
     const first = current[0]
-    const raw = norm(first.title || '') || norm(String(first.text || '').split('\n')[0])
-    const title = cleanChapterTitle(raw) || `第 ${out.length + 1} 部分`
+    // an empty title is fine here: informativeTitle() falls back to sub-headings
+    // and TF-IDF terms, which is better than a raw first line ("bad_all")
+    const title = usableTitle(first) || ''
     out.push({
       index: out.length + 1,
       title,
@@ -223,6 +251,74 @@ function chaptersByChars(doc) {
   }
   flush()
   return out.length ? out : null
+}
+
+/**
+ * Slide decks with neither sections nor numbering: split where the *page title*
+ * changes instead of every 700 characters.
+ *
+ * Fixed chunks are why a 67-slide deck came out as "课程导读 (p16–20)",
+ * "课程导读 (p21–25)"… — the boundary had nothing to do with the slides. Here a
+ * new chapter starts only on a real title change after the current one has enough
+ * text, and chapters that end up too short are folded back.
+ *
+ * If fewer than 30% of pages have a usable title the signal is worthless (a PDF
+ * with a broken text layer): return null so the fixed-chunk fallback takes over.
+ */
+function chaptersByTitleChange(doc) {
+  const pages = doc.pages || []
+  if (pages.length < 8) return null
+  const total = charsOf(pages)
+  // dense prose is chaptered by headings, not by page titles; slide exports can
+  // carry a few hundred characters per page and still be page-structured
+  if (total / pages.length >= 800) return null
+  const titled = pages.filter((page) => usableTitle(page)).length
+  if (titled / pages.length < 0.3) return null
+
+  const groups = []
+  let current = null
+  for (const page of pages) {
+    const title = usableTitle(page)
+    if (!current) {
+      current = { title: title || '', pages: [page] }
+      groups.push(current)
+      continue
+    }
+    if (title && title !== current.title && charsOf(current.pages) >= TITLE_CHANGE_CHARS) {
+      current = { title, pages: [page] }
+      groups.push(current)
+    } else {
+      current.pages.push(page)
+      if (!current.title && title) current.title = title
+    }
+  }
+
+  // fold short or identically-named neighbours into the previous chapter
+  const merged = []
+  for (const group of groups) {
+    const prev = merged[merged.length - 1]
+    const same = prev && titleKey(prev.title) === titleKey(group.title)
+    if (prev && (charsOf(group.pages) < MIN_CHAPTER_CHARS || same)) {
+      prev.pages.push(...group.pages)
+      prev.subs.push(...group.pages.map((p) => p.title).filter(Boolean))
+      prev.text = cap(`${prev.text}\n\n${group.pages.map((p) => p.text).join('\n\n')}`)
+      continue
+    }
+    merged.push({
+      title: group.title,
+      pages: [...group.pages],
+      subs: group.pages.map((p) => p.title).filter(Boolean),
+      text: cap(group.pages.map((p) => p.text).join('\n\n')),
+    })
+  }
+  if (merged.length < 2 || merged.length > MAX_CHAPTERS) return null
+  return merged.map((group, i) => ({
+    title: group.title || chapterTitleFor(group.pages, i),
+    source: 'title-change',
+    pages: group.pages.map((p) => p.index),
+    subs: group.subs,
+    text: group.text,
+  }))
 }
 
 /**
@@ -285,8 +381,11 @@ function chaptersFromSectionNumbers(doc) {
     }))
 }
 
-function chapterTitleFor(pages, i) {  const t = norm(pages[0]?.title)
-  if (t && t.length <= 40) return t
+function chapterTitleFor(pages, i) {
+  for (const page of pages || []) {
+    const t = usableTitle(page)
+    if (t) return t
+  }
   return `第 ${i + 1} 部分`
 }
 
@@ -348,18 +447,46 @@ function cleanChapterTitle(title) {
     .trim()
 }
 
-function chaptersFromText(text, docTitle) {
+/**
+ * Is this line part of a table block rather than a heading?
+ *
+ * A "复习大纲" exported to PDF can contain a filename ↔ chapter mapping table:
+ * `3_2_指令系统概述.pptx` on one line, `第 2 章 数据的机器级表示` on the next.
+ * Treating those cells as headings produced chapters in the wrong order that
+ * appeared twice. Only *structural* table evidence counts — a whole-line file
+ * name or a markdown row — because prose is full of arrows and colons.
+ */
+function inTableContext(lines, index) {
+  const isFilename = (t) => /^[\w\u4e00-\u9fff\-. ()（）]+\.(?:pptx|pdf|docx?|xlsx?|txt)$/i.test(t)
+  const isRow = (t) => /^\|.*\|$/.test(t)
+  let hits = 0
+  for (let k = Math.max(0, index - 3); k <= Math.min(lines.length - 1, index + 3); k += 1) {
+    if (k === index) continue
+    const t = String(lines[k] || '').trim()
+    if (!t) continue
+    if (isFilename(t) || isRow(t)) hits += 1
+  }
+  const self = String(lines[index] || '').trim()
+  return isRow(self) || hits >= 1
+}
+
+function chaptersFromText(text, docTitle, options = {}) {
   const lines = String(text || '').split('\n')
   const chapters = []
   let current = null
-  let preamble = []
+  const preamble = []
   const open = (title) => {
     current = { title, source: '', pages: [], subs: [], lines: [] }
     chapters.push(current)
   }
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
     const t = line.trim()
-    const level = headingLevelOf(t)
+    let level = headingLevelOf(t)
+    // PDF text extraction interleaves table cells with prose; a heading-looking
+    // cell ("3_2_….pptx" / "第 2 章 …") is not a chapter. Markdown and docx keep
+    // their real heading structure, so the heuristic only runs for PDF text.
+    if (options.tabular && level > 0 && inTableContext(lines, i)) level = 0
     if (level === 1) {
       open(t.replace(/^#{1,4}\s*/, ''))
       continue
@@ -517,30 +644,96 @@ function mergeSmall(chapters) {
 }
 
 /**
- * A chapter named after a page header ("主要内容") is useless in the table of
- * contents and poisonous as a search query. Fall back to the first informative
- * sub-heading, then the first line, then TF-IDF terms from the chapter itself.
+ * A chapter named after a page header ("主要内容"), a code line or half a sentence
+ * is useless in the table of contents and poisonous as a search query. Fall back
+ * to the first usable sub-heading, then the first informative line, then TF-IDF
+ * terms from the chapter itself — never leave a fragment in place.
  */
-function informativeTitle(chapter, index) {
-  const raw = String(chapter.title || '')
+function informativeTitle(chapter, index, docCjkRatio = 0) {
+  const raw = String(chapter.title || '').trim()
   // the page-range suffix tells two same-named chapters apart; only the
-  // generic-title test looks past it
+  // quality test looks past it — the rendered title keeps it
   const base = raw.replace(/（p\d+[–-]\d+）\s*$/, '').replace(/（\d+）\s*$/, '').trim()
-  const title = cleanChapterTitle(raw) || raw
+  const suffix = raw.slice(base.length)
+  const cleanedBase = cleanTitle(cleanChapterTitle(base) || base)
   // "第 1 章 甲" is a legitimate title; only drop genuinely empty phrases
-  if (base && !isGeneric(base)) return title
+  if (cleanedBase && !isGeneric(base) && titleScore(cleanedBase, { docCjkRatio }).score >= 0.55) return `${cleanedBase}${suffix}`.trim()
+  let bestSub = null
   for (const sub of chapter.subs || []) {
-    const term = cleanChapterTitle(sub) || sub
-    if (term && !isGeneric(term) && term.length <= 40) return term
+    const term = cleanTitle(cleanChapterTitle(sub) || sub)
+    if (!term || isGeneric(term) || term.length > 40) continue
+    const score = titleScore(term, { docCjkRatio }).score
+    if (score >= 0.55 && (!bestSub || score > bestSub.score)) bestSub = { term, score }
   }
+  if (bestSub) return `${bestSub.term}${suffix}`.trim()
   for (const line of String(chapter.text || '').split('\n')) {
-    const term = cleanTerm(line)
-    if (term && term.length <= 40) return term
+    const term = cleanTitle(cleanTerm(line))
+    if (term && term.length <= 40 && titleScore(term, { docCjkRatio }).score >= 0.55) return term
   }
   const terms = tfidfTerms([chapter.text || ''], { topK: 2 })
   if (terms.length) return terms.join(' ')
   return `第 ${index + 1} 部分`
 }
+
+/**
+ * The course name, chosen instead of inherited.
+ *
+ * A PDF whose first page is a slide header gives "幻灯片 1"; a report-style docx
+ * starts with "前言与使用说明"; a single-chapter file's title is really a chapter
+ * heading. Candidates are scored and the filename is the last resort.
+ */
+function docTitleCandidates(doc) {
+  const out = []
+  if (doc.outline?.[0]?.title) out.push({ text: doc.outline[0].title, source: 'bookmark' })
+  if (doc.title) out.push({ text: doc.title, source: 'parser' })
+  const firstPageTitle = (doc.pages || []).map((p) => p.title).find((t) => cleanTitle(t))
+  if (firstPageTitle) out.push({ text: firstPageTitle, source: 'page' })
+  const stem = String(doc.fileName || doc.name || '').replace(/\.[^.]+$/, '')
+  if (stem) out.push({ text: stem, source: 'filename' })
+  return out
+}
+
+export function pickCourseTitle(docs, chapterCount = 0) {
+  const text = (docs || []).map((doc) => (doc.pages || []).map((p) => p.text).join('\n') || doc.text || '').join('\n')
+  const docCjkRatio = cjkRatioOf(text)
+  const chosen = []
+  for (const doc of docs || []) {
+    let hit = null
+    for (const candidate of docTitleCandidates(doc)) {
+      const title = cleanTitle(candidate.text)
+      if (!title) continue
+      if (titleScore(title, { docCjkRatio }).score < 0.55) continue
+      // a chapter heading is not a course title once the file really has chapters
+      if (chapterCount >= 3 && hasChapterPrefix(title)) continue
+      hit = { title, source: candidate.source }
+      break
+    }
+    if (hit) chosen.push(hit)
+  }
+  if (!chosen.length) {
+    const stem = String(docs?.[0]?.fileName || docs?.[0]?.name || '').replace(/\.[^.]+$/, '')
+    return { title: stem || '课程', source: stem ? 'filename' : 'default' }
+  }
+  const sources = [...new Set(chosen.map((c) => c.source))]
+  return { title: chosen.map((c) => c.title).join(' + '), source: sources.join('+') }
+}
+
+/** Chapter titles that still look wrong after cleanup, plus duplicates. */
+export function outlineDiagnostics(chapters) {
+  const fallback = []
+  const bad = []
+  const seen = new Map()
+  for (const chapter of chapters) {
+    const raw = String(chapter.title || '')
+    if (/^第\s*\d+\s*部分$/.test(raw)) fallback.push(chapter.index)
+    const base = raw.replace(/（p\d+[–-]\d+）\s*$/, '').trim()
+    if (titleScore(base).score < 0.55) bad.push({ index: chapter.index, title: raw })
+    seen.set(base, (seen.get(base) || 0) + 1)
+  }
+  const duplicates = [...seen].filter(([, count]) => count > 1).map(([title]) => title)
+  return { fallback, bad, duplicates, chapters: chapters.length }
+}
+
 
 /**
  * @param docs parsed documents (each { kind, title, pages, blocks, outline? })
@@ -561,8 +754,14 @@ export function buildOutline(docs) {
     if (doc.sections?.length >= 2) chapters = chaptersFromSections(doc)
     if (!chapters) chapters = chaptersFromSectionHead(doc)
     if (!chapters && slideLike) {
-      const byNumber = chaptersFromSectionNumbers(doc)
-      chapters = byNumber?.length >= 2 ? byNumber : chaptersByChars(doc)
+      const byMarks = chaptersFromSectionMarks(doc)
+      if (byMarks) chapters = byMarks
+      const byNumber = chapters ? null : chaptersFromSectionNumbers(doc)
+      if (byNumber?.length >= 2) chapters = byNumber
+      // titles that actually change beat a fixed 5-page chunk: the slides' own
+      // topics become the chapter boundaries
+      if (!chapters) chapters = chaptersByTitleChange(doc)
+      if (!chapters) chapters = chaptersByChars(doc)
     }
     if (!chapters && !slideLike && doc.kind === 'pdf') chapters = chaptersFromHeadingSize(doc)
     if (!chapters && doc.outline?.length) {
@@ -574,11 +773,16 @@ export function buildOutline(docs) {
     if (!chapters && doc.blocks?.length) chapters = chaptersFromBlocks(doc)
     if (!chapters && doc.pages?.length) {
       // Slide decks exported to PDF: page titles are mixed strings like
-      // "幻灯片 3: 10.1 异常处理". Group pages by the section number instead of
-      // falling back to fixed 5-page chunks, which collapses a 54-page deck into
-      // one chapter.
-      const byNumber = chaptersFromSectionNumbers(doc)
+      // "幻灯片 3: 10.1 异常处理". § marks and section numbers are explicit; a
+      // changing page title is the next best boundary; fixed chunks are last.
+      const byMarks = chaptersFromSectionMarks(doc)
+      if (byMarks) chapters = byMarks
+      const byNumber = chapters ? null : chaptersFromSectionNumbers(doc)
       if (byNumber?.length >= 2) chapters = byNumber
+      if (!chapters) {
+        const byTitle = chaptersByTitleChange(doc)
+        if (byTitle?.length >= 2) chapters = byTitle
+      }
       if (!chapters) {
         const byChars = chaptersByChars(doc)
         if (byChars?.length >= 2) chapters = byChars
@@ -589,7 +793,7 @@ export function buildOutline(docs) {
       // patterns (OCR text has no reliable heading markers)
       const weak = doc.ocr ? false : doc.kind === 'pdf' || !pageTitlesStrong(doc.pages)
       if (weak) {
-        const byText = chaptersFromText(docFullText(doc), doc.title).filter((c) => c.text.length > 200)
+        const byText = chaptersFromText(docFullText(doc), doc.title, { tabular: doc.kind === 'pdf' }).filter((c) => c.text.length > 200)
         if (byText.length >= 3) chapters = byText
       }
       if (!chapters) chapters = chaptersFromPages(doc)
@@ -606,16 +810,15 @@ export function buildOutline(docs) {
     all.push(...chapters)
   }
   const chapters = mergeCover(mergeSmall(all), docs)
-  const courseTitle =
-    docs.length === 1 ? docs[0].title || '课程' : docs.map((d) => d.title).filter(Boolean).join(' + ')
+  const picked = pickCourseTitle(docs, chapters.length)
+  const docCjkRatio = cjkRatioOf(docs.map(docFullText).join('\n'))
+  const titled = chapters.map((c, i) => ({ ...c, index: i + 1, title: informativeTitle(c, i, docCjkRatio) }))
   return {
-    courseTitle: courseTitle || '课程',
-    chapters: chapters.map((c, i) => ({
-      ...c,
-      index: i + 1,
-      title: informativeTitle(c, i),
-    })),
-    tree: buildTree(chapters.map((c, i) => ({ ...c, title: informativeTitle(c, i) }))),
+    courseTitle: picked.title,
+    courseTitleSource: picked.source,
+    chapters: titled,
+    diagnostics: outlineDiagnostics(titled),
+    tree: buildTree(titled),
   }
 }
 

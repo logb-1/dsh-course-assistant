@@ -13,7 +13,8 @@ import { tmpdir } from 'node:os'
 import { basename, relative, isAbsolute, join } from 'node:path'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { parseFile } from './parser.js'
-import { buildOutline } from './outline.js'
+import { buildOutline, outlineDiagnostics } from './outline.js'
+import { cjkRatioOf, cleanTitle, hasChapterPrefix, normalisePageTitles, stripChapterPrefix, titleScore } from './titles.js'
 import { summarizeChapter, summarizeChapterReview, summarizeCourse, summarizeCourseReview, mapLimit, localSummary, CHAPTER_PROMPT_VERSION } from './summarize.js'
 import { buildReport } from './report.js'
 import { renderDashboardHtml } from './dashboard.js'
@@ -130,6 +131,57 @@ export function pageRangeLabel(chapter) {
   const min = Math.min(...pages)
   const max = Math.max(...pages)
   return min === max ? `第 ${min} 页` : `第 ${min}–${max} 页`
+}
+
+/** Chaptering sources where the author (not a heuristic) named the chapter. */
+const AUTHORED_SOURCE = /^(?:§\s*\d+|sections?|section-head|numbering)$/i
+/** 第 N 章 / 一、二、 — the document numbered this heading itself. */
+const AUTHORED_TITLE = /^(?:第\s*[一二三四五六七八九十百\d]+\s*[章节讲部]|[一二三四五六七八九十]+\s*[、.．])/
+
+/**
+ * Replace heuristic chapter titles with the title the model wrote while
+ * summarising ("cat" → "异常处理与捕获").
+ *
+ * Never overwrites author structure: a `第 N 章` title, PowerPoint sections,
+ * section-header layouts and § marks are kept verbatim. Duplicates that the model
+ * produces anyway are disambiguated with one of the chapter's own keywords.
+ *
+ * @param {Array<{title:string, source?:string, summary?:object}>} chapters mutated in place
+ * @returns {number} how many titles were adopted
+ */
+export function applyModelTitles(chapters, texts = []) {
+  if (!Array.isArray(chapters) || !chapters.length) return 0
+  const docCjkRatio = cjkRatioOf(chapters.map((chapter, i) => texts[i] || chapter.text || '').join('\n'))
+  let adopted = 0
+  for (const chapter of chapters) {
+    const current = cleanTitle(chapter.title)
+    const authored =
+      hasChapterPrefix(current) || AUTHORED_TITLE.test(current) || AUTHORED_SOURCE.test(String(chapter.source || ''))
+    const proposed = cleanTitle(
+      stripChapterPrefix(String(chapter.summary?.title || chapter.summary?.review?.chapter || '')),
+    )
+    const valid = proposed && titleScore(proposed, { docCjkRatio }).score >= 0.6
+    if (!authored && valid) {
+      if (proposed !== current) adopted += 1
+      chapter.title = proposed
+      chapter.titleSource = 'model'
+    } else if (!chapter.titleSource) {
+      chapter.titleSource = authored ? 'authored' : 'heuristic'
+    }
+  }
+  // de-duplicate: two model titles can legitimately collide ("异常处理")
+  const seen = new Map()
+  for (const chapter of chapters) {
+    const key = chapter.title
+    const count = (seen.get(key) || 0) + 1
+    seen.set(key, count)
+    if (count === 1) continue
+    const keywords = (chapter.summary?.keywords || []).map((k) => cleanTitle(String(k).split(/\s+/).pop()))
+    const extra = keywords.find((k) => k && k.length >= 2 && !key.includes(k))
+    if (extra) chapter.title = `${key}·${extra}`
+    else chapter.title = `${key}（${chapter.index}）`
+  }
+  return adopted
 }
 
 /**
@@ -366,6 +418,15 @@ async function prepareDocs({ inputs, store, ocr, images, warnings, push, signal 
     }
   }
 
+  // OCR replaced page text: re-score the titles of the pages it touched, so the
+  // outline is built from what the page now says instead of the garbage it had.
+  for (const doc of usable) {
+    if (!doc.ocr || !doc.pages?.length) continue
+    try {
+      normalisePageTitles(doc.pages)
+    } catch {}
+  }
+
   const scanned = usable.filter((d) => d.kind === 'pdf' && d.pages.length && d.pages.every((p) => p.text.length < 40))
   if (scanned.length) warnings.push(`疑似扫描版 PDF（无文本层）：${scanned.map((d) => d.name).join('、')}`)
   /* ---------------- slide pictures ---------------- */
@@ -574,6 +635,10 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     source: outline.source || 'heuristic',
     boundaries: outline.chapters.map((c) => ({ index: c.index, title: c.title, pages: c.pages || [], chars: c.text.length })),
     hash: createHash('sha256').update(outline.chapters.map((c) => `${c.title}#${(c.pages || []).join(',')}`).join('|')).digest('hex').slice(0, 16),
+    // what the title hygiene could and could not fix — shown in the report and
+    // used by the "目录自检" warning
+    diagnostics: outline.diagnostics || null,
+    courseTitleSource: outline.courseTitleSource || '',
   }
   // Anchor the whole run to one language/domain so chapter searches cannot drift
   // (a C++ lecture must not surface Python/Java tutorials for "异常处理").
@@ -684,6 +749,31 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       })
     },
   )
+
+  /* ---------------- 3.2 model-written chapter titles ---------------- */
+  // Heuristic chaptering names a chapter after the page fragment it starts with
+  // ("cat", "QUE 对象析"). The summary call already read the whole chapter, so it
+  // also returns a title; adopt it where the structure was inferred, never where
+  // the author numbered it (第 N 章 / PowerPoint sections / § marks).
+  if (options?.chapterTitles !== 'rules') applyModelTitles(chapters, texts)
+  // re-check titles after the model has had its say: a chapter it renamed is no
+  // longer a "bad title" and the warning should not claim otherwise
+  if (job.outline) {
+    job.outline.diagnostics = outlineDiagnostics(chapters.map((c) => ({ index: c.index, title: c.title })))
+    if (job.outline.diagnostics.bad.length) {
+      warnings.push(`目录自检：${job.outline.diagnostics.bad.length}/${job.outline.diagnostics.chapters} 章标题质量偏低`)
+    }
+    if (job.outline.diagnostics.duplicates.length) {
+      warnings.push(`目录自检：章名重复 ${job.outline.diagnostics.duplicates.length} 处（${job.outline.diagnostics.duplicates.slice(0, 3).join('、')}）`)
+    }
+  }
+  job.outline.boundaries = chapters.map((c) => ({ index: c.index, title: c.title, pages: c.pages || [], chars: c.chars || 0 }))
+  if (job.outline) {
+    job.outline.hash = createHash('sha256')
+      .update(chapters.map((c) => `${c.title}#${(c.pages || []).join(',')}`).join('|'))
+      .digest('hex')
+      .slice(0, 16)
+  }
 
   /* ---------------- 3.5 topic profile + Bilibili search ---------------- */
   // Keywords come from four sources now: the model, the headings, local TF-IDF
@@ -952,6 +1042,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       generatedAt: new Date().toISOString().slice(0, 19).replace('T', ' '),
       dashboardPath,
       style,
+      diagnostics: job.outline?.diagnostics || null,
     },
   })
   const reportPath = store.writeReport(outline.courseTitle || 'course', markdown)

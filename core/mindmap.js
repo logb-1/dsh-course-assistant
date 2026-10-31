@@ -1,3 +1,5 @@
+import { stripHeadingNumber } from './titles.js'
+
 /**
  * Mind map for the report.
  *
@@ -32,7 +34,7 @@ export function mindmapTree({ courseTitle, chapters = [], plan = [], graph = nul
   for (const chapter of chapters) {
     const blocked = blockedByChapter.get(chapter.index)
     const suffix = blocked ? `  ⚠ 前置未满足 ${blocked.missing.length}` : ''
-    lines.push(`├─ 第${chapter.index}章 ${clip(chapter.title, 28)}${suffix}`)
+    lines.push(`├─ 第${chapter.index}章 ${clip(stripHeadingNumber(chapter.title) || chapter.title, 28)}${suffix}`)
     for (const name of (byChapter.get(chapter.index) || []).slice(0, 5)) {
       lines.push(`│   · ${clip(name, 24)}`)
     }

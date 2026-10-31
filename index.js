@@ -52,6 +52,9 @@ export const Config = Schema.object({
   images: Schema.string().default('ocr').description('幻灯片图片 OCR：ocr 读取图片文字，off 关闭'),
   imagesMax: Schema.natural().default(40).description('每份课件最多 OCR 的图片数'),
   coverage: Schema.string().default('auto').description('要点覆盖：auto 自动，fast 不分节提示（最省），thorough 逐节摘要（每章最多 4 次调用）'),
+  chapterTitles: Schema.union([Schema.const('auto'), Schema.const('rules')])
+    .default('auto')
+    .description('章标题：auto 允许模型在摘要时顺带给标题（只覆盖启发式章名），rules 只用本地规则'),
   reportLevel: Schema.union([Schema.const('normal'), Schema.const('max')])
     .default('normal')
     .description('报告能力：normal 要点式学习报告（快、省 token）；max 复习资料（模块/知识点/实例/习题+参考答案，token 约 2-3 倍）'),
@@ -203,6 +206,7 @@ export function apply(ctx, config = {}) {
         engine: pick(raw.imagesEngine),
       },
       coverage: String(pick(raw.coverage) || pick(config.coverage) || 'auto'),
+    chapterTitles: String(pick(raw.chapterTitles) || pick(config.chapterTitles) || 'auto'),
       reportLevel: level,
       reportStyle: styleOfLevel(level),
       vision: pick(raw.vision) || pick(config.vision) || '',

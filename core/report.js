@@ -7,6 +7,7 @@ import { describeQuality } from './quality.js'
 import { describeCoverage } from './audit.js'
 import { describeConfidence, pointText } from './verify.js'
 import { describeReview } from './review.js'
+import { cleanTitle, hasChapterPrefix, stripHeadingNumber, titleScore } from './titles.js'
 
 const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim()
 
@@ -26,11 +27,54 @@ const fmtDur = (sec) => {
   return `${m}:${String(r).padStart(2, '0')}`
 }
 
+/** "### 第 3 章 xxx" — or the title itself when it already carries a chapter number. */
+function chapterHeading(c, level = '###') {
+  const title = cleanTitle(c.title) || `第 ${c.index} 部分`
+  // the author numbered this heading (第 N 章 / 一、二、): print it as written
+  const numbered = hasChapterPrefix(title) || /^[一二三四五六七八九十]+\s*[、.．]/.test(title)
+  return numbered ? `${level} ${title}` : `${level} 第 ${c.index} 章 ${title}`
+}
+
+/** One line for the report header; empty when the outline looked clean. */
+function describeOutlineDiagnostics(diagnostics) {
+  if (!diagnostics || !diagnostics.chapters) return ''
+  const bad = diagnostics.bad?.length || 0
+  const fallback = diagnostics.fallback?.length || 0
+  const dup = diagnostics.duplicates?.length || 0
+  if (!bad && !fallback && !dup) return ''
+  const bits = [`${diagnostics.chapters} 章`]
+  if (bad) bits.push(`${bad} 章标题由关键词/小节兜底`)
+  if (fallback) bits.push(`${fallback} 章只有占位名`)
+  if (dup) bits.push(`${dup} 处章名重复`)
+  return `目录自检：${bits.join('，')}`
+}
+
+/**
+ * Table of contents. Sub-headings are page titles, and page titles are often
+ * fragments ("pu", "10.1×"): they are scored, deduped and capped, with the
+ * chapter's own keywords as the fallback so the list always says something.
+ */
 function toc(chapters) {
   const lines = []
-  chapters.forEach((c, i) => {
-    lines.push(`${c.index}. ${c.title}`)
-    for (const sub of (c.subs || []).slice(0, 6)) lines.push(`   - ${sub}`)
+  chapters.forEach((c) => {
+    const title = stripHeadingNumber(cleanTitle(c.title)) || cleanTitle(c.title) || `第 ${c.index} 部分`
+    lines.push(`${c.index}. ${title}`)
+    const seen = new Set()
+    const subs = []
+    for (const raw of c.subs || []) {
+      const sub = cleanTitle(raw)
+      if (!sub || seen.has(sub) || titleScore(sub).score < 0.55) continue
+      // a chapter whose page title equals its own name adds nothing to the list
+      if (stripHeadingNumber(sub) === stripHeadingNumber(title)) continue
+      seen.add(sub)
+      subs.push(sub)
+      if (subs.length >= 4) break
+    }
+    if (!subs.length) {
+      const keywords = (c.summary?.keywords || []).slice(0, 2)
+      if (keywords.length) subs.push(keywords.join(' / '))
+    }
+    for (const sub of subs) lines.push(`   - ${sub}`)
   })
   return lines.join('\n')
 }
@@ -121,7 +165,7 @@ function reviewChapterSection(c, fileLabel = '') {
     // bullets instead of dropping the chapter from the document
     return [chapterSection(c), '', '> 本章未能生成复习结构（模型返回不可解析），上面是普通摘要。'].join('\n')
   }
-  const lines = [`### 第 ${chapterIndex} 章 ${c.title}`, '']
+  const lines = [chapterHeading(c, '###'), '']
   const stats = c.reviewStats
   if (stats) {
     lines.push(`> 本章：${stats.points} 个知识点 · ${stats.examples} 个实例 · ${stats.exercises} 道习题（${stats.answered} 道带答案）`)
@@ -285,7 +329,7 @@ function frameworkSection({ files, framework, chapters, knowledge, plan, warning
 
 function chapterSection(c) {
   const s = c.summary || {}
-  const lines = [`### 第 ${c.index} 章 ${c.title}`]
+  const lines = [chapterHeading(c, '###')]
   const points = (s.key_points || []).filter(Boolean)
   if (points.length) {
     lines.push('- 要点：')
@@ -425,6 +469,7 @@ export function buildReport(input) {
       : '',
     meta.images ? `幻灯片图片：OCR ${meta.images.read}/${meta.images.images} 张，补充 ${meta.images.chars} 字` : '',
     meta.coverage && meta.coverage.total ? describeCoverage(meta.coverage) : '',
+    meta.diagnostics ? describeOutlineDiagnostics(meta.diagnostics) : '',
     isReview && review ? `复习资料：${describeReview(review)}` : '',
     meta.offline ? '总结方式：本地兜底（模型不可用）' : '',
   ].filter(Boolean)
@@ -456,11 +501,15 @@ export function buildReport(input) {
     }
   } else {
     out.push('## 一、课程目录')
-    const mindmapSection = renderMindmapSection({ courseTitle: rawTitle, chapters, plan, graph: knowledge ? { nodes: new Map((knowledge.concepts || []).map((c) => [c.id, c])) } : null })
-    if (mindmapSection) { out.push(mindmapSection); }
     out.push('')
     out.push(toc(chapters) || '（未识别到目录）')
     out.push('')
+    // the prerequisite tree is a supplement to the contents, not a replacement
+    const mindmapSection = renderMindmapSection({ courseTitle: rawTitle, chapters, plan, graph: knowledge ? { nodes: new Map((knowledge.concepts || []).map((c) => [c.id, c])) } : null })
+    if (mindmapSection) {
+      out.push(mindmapSection)
+      out.push('')
+    }
 
     out.push('## 二、各章知识点')
     out.push('')

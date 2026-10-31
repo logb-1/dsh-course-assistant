@@ -120,20 +120,13 @@ export function applyOcrPages(pages, ocrPages, options = {}) {
     return {
       ...page,
       text: hit.text,
-      // a page that had no text had no title either; the OCR'd first line is one
-      title: page.title || firstLine(hit.text) || '',
+      // the old title described the old (unreadable) text: drop it and let
+      // normalisePageTitles() re-score the page after the OCR pass
+      title: '',
+      titleScore: 0,
       ocr: true,
       ocrScore: after.score,
     }
   })
   return { pages: out, adopted, kept, chars, reasons }
-}
-
-/** First line that could be a heading (not a page number or a rule of symbols). */
-function firstLine(text) {
-  for (const line of String(text || '').split('\n').slice(0, 4)) {
-    const t = line.trim()
-    if (t.length >= 2 && t.length <= 60 && !/^[\d\s.·、\-–—]+$/.test(t)) return t
-  }
-  return ''
 }

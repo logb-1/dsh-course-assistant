@@ -49,7 +49,8 @@ import { scoreText } from '../core/ocr-score.js'
 import { ocrPdf, ocrPdfDeep, registerOcrEngine } from '../core/ocr.js'
 import { buildTopicProfile } from '../core/topic.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
-import { diffSummary, readImageTexts, rerunChapter, runPipeline } from '../core/pipeline.js'
+import { diffSummary, applyModelTitles, readImageTexts, rerunChapter, runPipeline } from '../core/pipeline.js'
+import { cleanTitle, normalisePageTitles, titleScore } from '../core/titles.js'
 import { parseReview, reviewKeyPoints, reviewStats } from '../core/review.js'
 import { buildReport } from '../core/report.js'
 import { describeLevel, levelOfStyle, resolveLevel, styleOfLevel } from '../core/report-level.js'
@@ -153,6 +154,49 @@ real('切章：幻灯片型 PDF 不再塌成 1 章', () => {
     assert(outline.chapters.length >= 3, `${key} 只切出 ${outline.chapters.length} 章（应 ≥3）`)
   }
   return ran ? 'L10/L12 ≥3 章' : 'skip'
+})
+
+real('目录自检：课程名不带「幻灯片」，章名不是代码行或纯数字', () => {
+  let ran = 0
+  const problems = []
+  for (const key of ['L10', 'L12']) {
+    if (!FILES[key]) continue
+    ran += 1
+    const doc = parseFile(FILES[key], basename(FILES[key]))
+    const outline = buildOutline([doc])
+    if (/幻灯片|slide/i.test(outline.courseTitle)) problems.push(`${key} 课程名=${outline.courseTitle}`)
+    for (const chapter of outline.chapters) {
+      const title = String(chapter.title || '')
+      if (/幻灯片|slide/i.test(title)) problems.push(`${key} 章名含幻灯片前缀：${title}`)
+      if (/^[\d.\s]+$/.test(title) || /[{};=<>#]/.test(title)) problems.push(`${key} 章名像代码/纯数字：${title}`)
+      if ((title.match(/[\u4e00-\u9fff]/g) || []).length < 2) problems.push(`${key} 章名中文过少：${title}`)
+    }
+  }
+  assert(!problems.length, problems.slice(0, 3).join('；'))
+  return ran ? 'L10/L12 课程名与章名通过自检' : 'skip'
+})
+
+real('PPTX 节：作者编号的章名必须逐字保留', () => {
+  if (!FILES.deck) return 'skip'
+  const doc = parseFile(FILES.deck, basename(FILES.deck))
+  const outline = buildOutline([doc])
+  const expected = [
+    '一页摘要',
+    '制度背景',
+    '主流叙事与质疑',
+    '理论框架',
+    '文献地图',
+    '政策背景（中方）',
+    '方法总览',
+    '对称性检验',
+    '数据来源',
+    '参考文献（一）：英文文献',
+  ]
+  assert(outline.chapters.length === expected.length, `章数 ${outline.chapters.length} ≠ ${expected.length}`)
+  outline.chapters.forEach((chapter, i) => {
+    assert(chapter.title === expected[i], `第 ${i + 1} 章标题被改动：${chapter.title} ≠ ${expected[i]}`)
+  })
+  return `${expected.length} 个 § 章名逐字一致`
 })
 
 real('PPTX：演讲者备注被读入', () => {
@@ -322,6 +366,71 @@ check('同名章节：重复页眉合并且不出现同名', () => {
   assert(new Set(titles).size === titles.length, `出现同名章：${titles.join(' | ')}`)
   assert(titles.some((t) => /p\d+–\d+/.test(t)), `非相邻同名没有付页码：${titles.join(' | ')}`)
   return `${one.chapters.length} 章 / ${two.chapters.length} 章带区间`
+})
+
+check('标题卫生：幻灯片前缀、注解、截断句与代码行的判定', () => {
+  assert(cleanTitle('幻灯片 1: 第10章 异常与断言') === '第10章 异常与断言', `前缀没去掉：${cleanTitle('幻灯片 1: 第10章 异常与断言')}`)
+  assert(
+    cleanTitle('★★★★ 第 8 章 异常和中断（投入 12% 时间）') === '第 8 章 异常和中断',
+    '星星与投入注解没去掉',
+  )
+  assert(cleanTitle('第 3 章 xxx（p12–18）') === '第 3 章 xxx', '页码后缀没去掉')
+  const veto = (text, ctx) => titleScore(text, ctx).score < 0.55
+  assert(veto('8.0'), '纯数字应被拒')
+  assert(veto('#include <iostream>'), '代码行应被拒')
+  assert(veto('int main(i , char **'), '函数签名应被拒')
+  assert(veto('cat', { docCjkRatio: 0.2 }), '中文课件里的短英文碎片应被拒')
+  assert(veto('、有虚函数时，对象的存储空间'), '以标点开头的截断句应被拒')
+  assert(veto('创建一个类来描述错误信息，可以帮'), '带逗号的截断句应被拒')
+  assert(veto('xuxy@hus'), '邮箱碎片应被拒')
+  assert(!veto('第 3 章 异常处理'), '正常章名被误杀')
+  assert(!veto('测试防护网：FIRST原则'), '正常小节名被误杀')
+  assert(!veto('① 接口设计：原则'), '带序号标题被误杀')
+  return '10 条判定'
+})
+
+check('标题卫生：重复面包屑不再当标题', () => {
+  const pages = Array.from({ length: 10 }, (_, i) => ({
+    index: i + 1,
+    title: '课程导读',
+    text: `课程导读\n第 ${i + 1} 讲 命名规范与接口设计\n正文内容用于填充这一页的正文长度。`,
+  }))
+  const result = normalisePageTitles(pages)
+  assert(pages.every((page) => page.title !== '课程导读'), '面包屑仍被当成标题')
+  assert(pages[0].title.includes('命名规范'), `备用标题没选出来：${pages[0].title}`)
+  return `10 页重选了 ${result.changed} 页`
+})
+
+check('分章：按页标题变化切，而不是固定 5 页', () => {
+  const topics = ['接口设计', '命名规范', '测试防护网', '代码管理']
+  const pages = []
+  let n = 1
+  for (const topic of topics) {
+    for (let k = 0; k < 4; k += 1) {
+      pages.push({ index: n++, title: topic, text: `${topic}\n${'内容填充'.repeat(100)}` })
+    }
+  }
+  const outline = buildOutline([{ kind: 'pptx', title: '测试课件', pages, blocks: [] }])
+  const titles = outline.chapters.map((chapter) => chapter.title)
+  assert(outline.chapters.length === 4, `应切 4 章（每章 4 页），实际 ${outline.chapters.length}：${titles.join(' | ')}`)
+  assert(titles.join('|') === topics.join('|'), `章名没有跟随标题变化：${titles.join(' | ')}`)
+  return '4 章 / 边界跟着标题走'
+})
+
+check('分章标题：模型标题只覆盖启发式命名，不覆盖作者编号', () => {
+  const chapters = [
+    { index: 1, title: 'cat', source: 'title-change', summary: { title: '异常处理与捕获', keywords: ['C++ 异常'] } },
+    { index: 2, title: '第 3 章 程序的转换', source: '', summary: { title: '模型想改' } },
+    { index: 3, title: '制度背景', source: '§ 01', summary: { title: '模型想改' } },
+    { index: 4, title: 'QUE 对象析', source: 'title-change', summary: { title: '异常处理与捕获', keywords: ['栈展开'] } },
+  ]
+  const adopted = applyModelTitles(chapters, [])
+  assert(chapters[0].title === '异常处理与捕获', `启发式标题没被替换：${chapters[0].title}`)
+  assert(chapters[1].title === '第 3 章 程序的转换', '作者编号被覆盖了')
+  assert(chapters[2].title === '制度背景', '§ 章节名被覆盖了')
+  assert(chapters[3].title === '异常处理与捕获·栈展开', `重名没有消歧：${chapters[3].title}`)
+  assert(adopted === 2, `adopted 应为 2，实际 ${adopted}`)
+  return '2 采用 / 2 保留'
 })
 
 check('PPTX 节：按 slide id 还原节边界（id 非单调）', () => {

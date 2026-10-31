@@ -36,6 +36,33 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 附录不会为空：检索被风控或没有相关结果时，该行退化为
 `https://search.bilibili.com/all?keyword=<URL编码关键词>` 搜索入口。
 
+## 1.15.0 新增：标题与目录整修（诊断 → 修复）
+
+目录偏差不是模型的问题，是分章前的本地结构识别。六个真实课件里五个能复现：
+课程名变成「幻灯片 1」、章名是 `cat` / `fruit ptrfrui` / `class B : public A` 这种碎片、
+67 页课件被切成固定 5 页一章、表格行被当成章节。这一版按诊断报告（`docs/title-outline-plan.md`）修：
+
+| 环节 | 改动 |
+|---|---|
+| **标题卫生**（`core/titles.js`） | 去「幻灯片 N:」前缀与「（投入 12% 时间）」注解；`titleScore` 否决纯数字（`8.0`）、代码行、邮箱/URL、以标点开头的截断句、带逗号的长句；页面标题按「占位符 > 最大字号 > 正文前 8 行」打分择优，重复面包屑（`课程导读`）自动降权 |
+| **分章边界** | 无节/无编号的课件改为**按页标题变化切**（当前章 ≥1200 字才开新章、<500 字并回上一章，越界退回定长切块）；`§ 编号` 与章节编号仍然优先；PDF 文本里的「文件名 ↔ 第 N 章」表格行不再当章节；Markdown/docx 的正文不再套用 PDF 的表格启发式 |
+| **课程名** | 新增候选链：文件名 → PDF 书签 → 首个合格页标题 → 章节标题；拒绝「幻灯片 N」「前言」「目录」与「第 N 章 …」（多章文件里那是章节名） |
+| **模型标题** | 章节摘要提示词 v6 顺带返回 `title`（**零额外调用**）；只覆盖启发式章名，作者编号（`第 N 章`）、PowerPoint 节、`§ 编号` 一律不动；模型给出重名时用该章关键词消歧。可用 `chapterTitles: 'rules'` 关掉 |
+| **报告呈现** | 目录子标题过质量分（`pu`、`10.1×` 不再出现）、去重、每章最多 4 条，空时用关键词兜底；标题自带编号时不再重复加「第 N 章」；报告头加一行「目录自检」 |
+
+实测（同一批文件）：
+
+| 文件 | 之前 | 之后 |
+|---|---|---|
+| `L10_C08_多态与虚函数.pdf` | 课程名「幻灯片 1」，章名 `第 1 部分` / `fruit ptrfrui` / `class B : public A` | 课程名 `L10_C08_多态与虚函数`，7 章：`第 8 章多态与虚函数` / `正确理解虚函数` / … |
+| `L12_C10_异常与断言.pdf` | 9 章碎片（`异常`、`cat`、`QUE 对象析`） | 7 章，首章 `第 10 章异常与断言`；有模型时章名改由摘要调用给出 |
+| `实验1-高质量编程基础.pptx` | 13 章固定 5 页块，`课程导读` 撞名 3 次 | 14 章按标题变化：`课程实训案例引导` / `减少符号依赖` / `测试防护网：正交分解法` / `git常用命令` … |
+| `关上800美元…pptx` | 10 章（`§ 01 制度背景`…） | **逐字不变**（作者编号受保护，单测守门） |
+| `计算机系统基础 复习&自学大纲.pdf` | 11 章乱序、`第 2 章`/`第 8 章` 各出现两次 | 10 章按原顺序，无重复 |
+| `C++程序设计课程复习讲义.docx` | 课程名「前言与使用说明」 | 课程名取文件名 |
+
+配置新增 `chapterTitles`（`auto` 默认 / `rules` 只用本地规则）。
+
 ## 1.14.0 新增：Normal / MAX 两档报告能力（复习资料版）
 
 面板上多了 **「报告模式：Normal ｜ MAX」** 两档（配置项 `reportLevel`）：
@@ -376,6 +403,7 @@ install_bundle(target="github:logb-1/dsh-course-assistant")
 | `images` / `imagesMax` | `ocr` / `40` | 幻灯片内嵌图片 OCR 开关与每份上限 |
 | `coverage` | `auto` | `fast` 不分节提示（省 token）/ `auto` / `thorough` 逐节摘要（每章最多 4 次调用） |
 | `reportLevel` | `normal` | `normal` 要点式学习报告（快、省 token）；`max` 复习资料（K/E/Q + 参考答案，token 约 2-3 倍） |
+| `chapterTitles` | `auto` | 章标题：`auto` 允许模型在摘要时顺带给标题（只覆盖启发式章名）；`rules` 只用本地规则 |
 | `spacingMs` | `1000` | B 站请求间隔（≥1000） |
 | `keepUploadsDays` | `7` | 上传文件保留天数（1–90），仍被任务引用的不会被删 |
 
@@ -413,6 +441,7 @@ course-assistant/
 │   ├── media.js          # pptx 内嵌图片抽取（a:blip → rels → ppt/media）
 │   ├── bili.js           # WBI 签名搜索 + 评分排序 + 合集识别 + 24h 缓存 + 风控降级
 │   ├── summarize.js      # 固定 JSON 提示词、并发、JSON 截断修复、本地兜底
+│   ├── titles.js         # 标题卫生：清洗、评分否决、家具检测、选页标题
 │   ├── review.js         # MAX 档：K/E/Q 契约、解析、页码校验、统计
 │   ├── report-level.js   # Normal/MAX 与内部 reportStyle 的单点映射
 │   ├── json-repair.js    # 模型回包的 JSON 提取与截断修复（两种报告共用）
@@ -486,7 +515,7 @@ course-assistant/
 | Host 路由 | `GET /course-assistant/health` → 200 `{llm:true,pdf:true}`；`upload`→`run`→`job`→`report(md)`→`report(pdf)` 全链路通过（`tools/smoke.mjs`） |
 | Client 槽位 | `main` key `course-assistant` active；`sidebar.panellist` id `course-assistant` active；`conversation.composer.dock` id `course-assistant-dock` active |
 | 语法 | `node --check` 全部通过（index.js / client.js / core/*.js） |
-| 回归 | `node tools/regress.mjs` 共 59 项：`--unit` **48 项**（合成 PDF / 扫描件、可信度/证据、CTM 字号、分章指标、单章重跑、同名章、PPTX 节映射、导出结构、OCR 分诊/择优/页号/图片缓存、复习资料解析与报告结构、Normal/MAX 映射）任何机器可跑；`--real` 11 项需要课件；`--strict` 下 unit 缺文件即失败 |
+| 回归 | `node tools/regress.mjs` 共 65 项：`--unit` **52 项**（合成 PDF / 扫描件、标题卫生与分章边界、模型标题覆盖规则、可信度/证据、CTM 字号、分章指标、单章重跑、PPTX 节映射、导出结构、OCR 分诊/择优/页号、复习资料解析与报告结构、Normal/MAX 映射）任何机器可跑；`--real` 13 项需要课件；`--strict` 下 unit 缺文件即失败 |
 | 真实课件 | `L12`（67 页 PDF）：OCR 分诊只读 26 页，正文 5 502 → 8 214 字；`实验1-高质量编程基础.pptx`：2 张图全读、186 字、2/14 个提示词带上 `[图片]` |
 | CI | `.github/workflows/ci.yml`：Windows + Ubuntu 矩阵跑 `--unit --strict` 与 client 契约测试；package job 校验 tarball 清单（防 `files` 漏文件）与"版本号不许写死" |
 | 分章质量 | `tools/gold/*.json` + `tools/segment-metrics.mjs`（windowdiff / 边界 F1，±1 页容差）；`deck-800`：章 10/11、windowdiff **0.061**、F1 **0.947** |

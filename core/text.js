@@ -4,6 +4,7 @@
  * "先本地处理、后调用模型": page furniture (page numbers, running headers,
  * repeated slide template lines) is removed here so the model sees only content.
  */
+import { normalisePageTitles } from './titles.js'
 
 const PAGE_NO = [
   /^第\s*\d{1,4}\s*页(\s*\/\s*共\s*\d+\s*页)?$/,
@@ -137,6 +138,9 @@ export function cleanDoc(doc) {
     doc.pages = stripFurniture(doc.pages, doc.title).filter(
       (p) => p.text.trim().length > 0 || Number(p.images) > 0,
     )
+    // One place decides what a page is called: a placeholder title is a
+    // candidate, a repeated breadcrumb or a code line is rejected (core/titles.js)
+    normalisePageTitles(doc.pages)
   }
   if (doc.blocks?.length) {
     doc.blocks = doc.blocks
