@@ -52,6 +52,7 @@ import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, readImageTexts, rerunChapter, runPipeline } from '../core/pipeline.js'
 import { parseReview, reviewKeyPoints, reviewStats } from '../core/review.js'
 import { buildReport } from '../core/report.js'
+import { describeLevel, levelOfStyle, resolveLevel, styleOfLevel } from '../core/report-level.js'
 
 const ARGV = process.argv.slice(2)
 const QUIET = ARGV.includes('--quiet')
@@ -946,6 +947,18 @@ function sampleReview(overrides = {}) {
   }
 }
 
+check('报告模式：Normal / MAX 与内部报告风格的映射', () => {
+  assert(resolveLevel('max') === 'max' && resolveLevel('review') === 'max', 'max / review 没有映射到 max')
+  assert(resolveLevel('normal') === 'normal' && resolveLevel('brief') === 'normal', 'normal / brief 没有映射到 normal')
+  assert(resolveLevel('MAX') === 'max', '大小写应不敏感')
+  assert(resolveLevel('') === 'normal' && resolveLevel(undefined) === 'normal', '空值应回落到 normal')
+  assert(resolveLevel('', 'max') === 'max', 'fallback 没有生效')
+  assert(styleOfLevel('max') === 'review' && styleOfLevel('normal') === 'brief', 'level → style 映射不对')
+  assert(levelOfStyle('review') === 'max' && levelOfStyle('brief') === 'normal', 'style → level 映射不对')
+  assert(describeLevel('max').startsWith('MAX') && describeLevel('normal').startsWith('Normal'), '模式说明不对')
+  return 'normal↔brief / max↔review'
+})
+
 check('复习资料：解析模型 JSON、校验页码、容忍截断', () => {
   const raw = JSON.stringify(sampleReview())
   const review = parseReview(raw, { chapter: { index: 1 }, pages: [2, 3] })
@@ -1077,12 +1090,12 @@ check('复习资料版：假模型端到端生成 K/E/Q 与参考答案', async 
     const job = await runPipeline({
       id: 'review-e2e',
       inputs: [{ path: file, name: 'course.md' }],
-      options: { withVideos: false, knowledge: false, concurrency: 1, reportStyle: 'review' },
+      options: { withVideos: false, knowledge: false, concurrency: 1, reportLevel: 'max', reportStyle: 'review' },
       deps: { store, bili: null, llm },
       emit: () => {},
     })
     assert(job.status === 'done', `任务失败：${job.error || job.status}`)
-    assert(job.style === 'review', `job.style 不对：${job.style}`)
+    assert(job.style === 'review' && job.reportLevel === 'max', `级别/风格不对：${job.style}/${job.reportLevel}`)
     assert(job.chapters.every((c) => c.summary?.review), '有章节没有 review 结构')
     assert(job.review?.points === job.chapters.length, `课程级统计不对：${JSON.stringify(job.review)}`)
     const md = readFileSync(job.reportPath, 'utf8')

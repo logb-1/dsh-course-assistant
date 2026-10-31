@@ -18,8 +18,8 @@
 import { parseJsonObject } from './json-repair.js'
 
 export const REVIEW_PROMPT_VERSION = 1
-/** Review needs detail the brief prompt deliberately drops. */
-export const REVIEW_MAX_CHARS = 6000
+/** Review needs detail the brief prompt deliberately drops (brief: 3600). */
+export const REVIEW_MAX_CHARS = 8000
 /**
  * A review answer is 3-5x longer than six bullets, and a reasoning model spends
  * part of the budget thinking. Truncation is salvaged by json-repair, but the

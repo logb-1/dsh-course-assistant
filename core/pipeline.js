@@ -497,6 +497,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   const warnings = []
   // 'review' = 复习资料（模块/知识点/实例/习题）；'brief' = 原来的要点式报告
   const style = options?.reportStyle === 'review' ? 'review' : 'brief'
+  const reportLevel = style === 'review' ? 'max' : 'normal'
 
   const job = {
     id,
@@ -506,6 +507,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     message: '解析文件…',
     progress: 0.02,
     style,
+    reportLevel,
     files: [],
     courseTitle: '',
     chapters: [],

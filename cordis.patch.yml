@@ -17,8 +17,8 @@
 #   ocrPython        python executable for the rapidocr engine
 #   images/imagesMax slide-picture OCR: 'ocr' | 'off', max pictures per deck
 #   coverage         'auto' | 'fast' | 'thorough' (per-section summaries)
-#   reportStyle      'brief' | 'review' - review = 复习资料（模块 K / 实例 E /
-#                    习题 Q + 参考答案，token 约 2-3 倍）
+#   reportLevel      'normal' | 'max' - normal = 要点式学习报告（快、省 token）；
+#                    max = 复习资料（模块 K / 实例 E / 习题 Q + 参考答案，约 2-3 倍 token）
 #   provider/model   summary model; empty = the profile's default model
 #   spacingMs        Bilibili request spacing, >=1000 (default 1000)
 #   keepUploadsDays  upload retention (default 7)

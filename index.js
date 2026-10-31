@@ -26,6 +26,7 @@ import { coverage, parseSyllabus } from './core/coverage.js'
 import { parseFile } from './core/parser.js'
 import { markdownToDocx } from './core/docx.js'
 import { SUPPORTED } from './core/parser.js'
+import { resolveLevel, styleOfLevel } from './core/report-level.js'
 
 const HERE = join(fileURLToPath(new URL('.', import.meta.url)))
 const PKG = (() => {
@@ -51,9 +52,9 @@ export const Config = Schema.object({
   images: Schema.string().default('ocr').description('幻灯片图片 OCR：ocr 读取图片文字，off 关闭'),
   imagesMax: Schema.natural().default(40).description('每份课件最多 OCR 的图片数'),
   coverage: Schema.string().default('auto').description('要点覆盖：auto 自动，fast 不分节提示（最省），thorough 逐节摘要（每章最多 4 次调用）'),
-  reportStyle: Schema.union([Schema.const('brief'), Schema.const('review')])
-    .default('brief')
-    .description('报告形态：brief 要点式学习报告；review 复习资料（模块/知识点/实例/习题+参考答案，token 约 2-3 倍）'),
+  reportLevel: Schema.union([Schema.const('normal'), Schema.const('max')])
+    .default('normal')
+    .description('报告能力：normal 要点式学习报告（快、省 token）；max 复习资料（模块/知识点/实例/习题+参考答案，token 约 2-3 倍）'),
   vision: Schema.string().default('').description('多模态模型（预留，留空关闭）'),
   domain: Schema.string().default('').description('强制课程领域（如 C++），留空自动识别'),
   ocrMaxPages: Schema.natural().min(1).max(400).default(60).description('OCR 重读页数上限（页级分诊选出的页，按文档顺序）'),
@@ -179,25 +180,34 @@ export function apply(ctx, config = {}) {
 
   const pick = (value) => (value === '' || value == null ? undefined : value)
   // precedence is the same for every field: request option > config > default
-  const optionsOf = (raw = {}) => ({
-    withVideos: raw.withVideos !== false && config.withVideos !== false,
-    concurrency: Math.max(1, Math.min(5, Number(raw.concurrency) || Number(config.concurrency) || 4)),
-    ocr: raw.ocr === true,
-    ocrMaxPages: Number(raw.ocrMaxPages) || Number(config.ocrMaxPages) || 60,
-    ocrMode: String(pick(raw.ocrMode) || pick(config.ocrMode) || 'auto'),
-    ocrPick: String(pick(raw.ocrPick) || pick(config.ocrPick) || 'first'),
-    ocrEngine: pick(raw.ocrEngine) || pick(config.ocrEngine),
-    ocrPython: pick(raw.ocrPython) || pick(config.ocrPython),
-    domain: pick(raw.domain) || pick(config.domain),
-    images: {
-      mode: String(pick(raw.images) || pick(config.images) || 'ocr'),
-      max: Number(pick(raw.imagesMax) ?? pick(config.imagesMax) ?? 40) || 40,
-      engine: pick(raw.imagesEngine),
-    },
-    coverage: String(pick(raw.coverage) || pick(config.coverage) || 'auto'),
-    reportStyle: String(pick(raw.reportStyle) || pick(config.reportStyle) || 'brief'),
-    vision: pick(raw.vision) || pick(config.vision) || '',
-  })
+  const optionsOf = (raw = {}) => {
+    // both spellings accepted: `reportLevel` is the UI option, `reportStyle` is
+    // what saved jobs and cache keys carry (and what 1.13 callers still send)
+    const level = resolveLevel(
+      pick(raw.reportLevel) || pick(raw.reportStyle),
+      resolveLevel(pick(config.reportLevel), 'normal'),
+    )
+    return {
+      withVideos: raw.withVideos !== false && config.withVideos !== false,
+      concurrency: Math.max(1, Math.min(5, Number(raw.concurrency) || Number(config.concurrency) || 4)),
+      ocr: raw.ocr === true,
+      ocrMaxPages: Number(raw.ocrMaxPages) || Number(config.ocrMaxPages) || 60,
+      ocrMode: String(pick(raw.ocrMode) || pick(config.ocrMode) || 'auto'),
+      ocrPick: String(pick(raw.ocrPick) || pick(config.ocrPick) || 'first'),
+      ocrEngine: pick(raw.ocrEngine) || pick(config.ocrEngine),
+      ocrPython: pick(raw.ocrPython) || pick(config.ocrPython),
+      domain: pick(raw.domain) || pick(config.domain),
+      images: {
+        mode: String(pick(raw.images) || pick(config.images) || 'ocr'),
+        max: Number(pick(raw.imagesMax) ?? pick(config.imagesMax) ?? 40) || 40,
+        engine: pick(raw.imagesEngine),
+      },
+      coverage: String(pick(raw.coverage) || pick(config.coverage) || 'auto'),
+      reportLevel: level,
+      reportStyle: styleOfLevel(level),
+      vision: pick(raw.vision) || pick(config.vision) || '',
+    }
+  }
 
   function resolveLlm() {
     const svc = ctx.get('llm')
@@ -487,7 +497,7 @@ export function apply(ctx, config = {}) {
           ocrEngines: await ocrStatus(),
           ocrMode: String(config.ocrMode || 'auto'),
           ocrPick: String(config.ocrPick || 'first'),
-          reportStyle: String(config.reportStyle || 'brief'),
+          reportLevel: String(config.reportLevel || 'normal'),
           dataDir: store.dataDir,
           supported: [...SUPPORTED, '.ppt', '.doc', '.xls'],
           jobs: jobs.size,
@@ -681,10 +691,10 @@ export function apply(ctx, config = {}) {
           format: { type: 'string', enum: ['md', 'pdf', 'csv', 'json'], description: 'export 的格式，默认 md' },
           question: { type: 'string', description: 'ask 的问题（中文即可）' },
           withVideos: { type: 'boolean', description: '是否检索 B 站网课，默认 true' },
-          reportStyle: {
+          reportLevel: {
             type: 'string',
-            enum: ['brief', 'review'],
-            description: 'brief 要点式学习报告（默认）；review 复习资料（模块/知识点/实例/习题+参考答案）',
+            enum: ['normal', 'max'],
+            description: 'normal 要点式学习报告（默认）；max 复习资料（模块/知识点/实例/习题+参考答案）',
           },
         },
         required: ['action'],
@@ -734,8 +744,8 @@ export function apply(ctx, config = {}) {
           if (!inputs?.length) return { ok: false, reason: restoreInputs(args.jobId).error || '原任务的上传文件已过期' }
           const chapterIndex = Number(args.chapterIndex) || 0
           const job = chapterIndex > 0
-            ? await makeRerunJob(previous, inputs, chapterIndex, optionsOf({ withVideos: args.withVideos, reportStyle: args.reportStyle }))
-            : await makeJob(inputs, optionsOf({ withVideos: args.withVideos, reportStyle: args.reportStyle }))
+            ? await makeRerunJob(previous, inputs, chapterIndex, optionsOf({ withVideos: args.withVideos, reportLevel: args.reportLevel || args.reportStyle }))
+            : await makeJob(inputs, optionsOf({ withVideos: args.withVideos, reportLevel: args.reportLevel || args.reportStyle }))
           return { ok: true, jobId: job.id, chapterIndex: chapterIndex || null, status: job.status }
         }
         if (args.action === 'status') {
@@ -812,7 +822,7 @@ export function apply(ctx, config = {}) {
           if (stat.size > MAX_UPLOAD) return { ok: false, reason: `文件过大（>60MB）：${path}` }
           inputs.push({ path, name: basename(path) })
         }
-        const job = await makeJob(inputs, optionsOf({ withVideos: args.withVideos, reportStyle: args.reportStyle }))
+        const job = await makeJob(inputs, optionsOf({ withVideos: args.withVideos, reportLevel: args.reportLevel || args.reportStyle }))
         // wait for completion so the agent gets the result in one call
         const deadline = Date.now() + 150000
         let current = jobs.get(job.id)

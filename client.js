@@ -571,7 +571,7 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
     function Panel() {
       const [files, setFiles] = useState([])
       const [withVideos, setWithVideos] = useState(true)
-    const [reviewStyle, setReviewStyle] = useState(false)
+    const [reportLevel, setReportLevel] = useState('normal')
       const [job, setJob] = useState(null)
       const [phase, setPhase] = useState('idle')
       const [error, setError] = useState('')
@@ -711,7 +711,7 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               files: uploaded.map((u) => ({ id: u.id })),
-              options: { withVideos, reportStyle: reviewStyle ? 'review' : 'brief' },
+              options: { withVideos, reportLevel },
             }),
           })
           const data = await res.json()
@@ -744,7 +744,9 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ jobId, options, chapterIndex }),
+            // carry the current level: otherwise "换种方式重跑" would silently
+            // downgrade a MAX job to Normal
+            body: JSON.stringify({ jobId, options: { reportLevel, ...(options || {}) }, chapterIndex }),
           })
           const data = await res.json()
           if (!data.ok) throw new Error(data.reason || '重跑失败')
@@ -880,15 +882,26 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
                 '检索 B 站网课',
               ),
               h(
-                'label',
-                { className: 'ca-opt', title: '模块 → 知识点（K）→ 实例（E）→ 习题（Q）＋参考答案；token 约为普通版的 2-3 倍' },
-                h('input', {
-                  type: 'checkbox',
-                  checked: reviewStyle,
-                  onChange: (e) => setReviewStyle(e.target.checked),
-                  disabled: busy,
-                }),
-                '复习资料版',
+                'span',
+                { className: 'ca-opt', style: { gap: 6 } },
+                '报告模式',
+                [
+                  ['normal', 'Normal', 'Normal：要点式学习报告，快且省 token'],
+                  ['max', 'MAX', 'MAX：复习资料（模块 / 知识点 / 实例 / 习题 + 参考答案），token 约 2-3 倍'],
+                ].map(([level, label, tip]) =>
+                  h(
+                    'button',
+                    {
+                      key: level,
+                      className: `ca-btn small${reportLevel === level ? ' pri' : ''}`,
+                      title: tip,
+                      'aria-pressed': reportLevel === level ? 'true' : 'false',
+                      disabled: busy,
+                      onClick: () => setReportLevel(level),
+                    },
+                    label,
+                  ),
+                ),
               ),
               h('span', { className: 'ca-sp' }),
               h(
@@ -898,6 +911,13 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
               ),
             ),
             error ? h('div', { className: 'ca-err' }, error) : null,
+            reportLevel === 'max'
+              ? h(
+                  'div',
+                  { className: 'ca-phase', style: { marginTop: 6 } },
+                  'MAX：每章生成 模块 / 知识点 / 实例 / 习题，另加一次复习框架调用；耗时与 token 约为 Normal 的 2-3 倍',
+                )
+              : null,
           ),
           h(Progress, { job }),
           h(Feedback, { job, health, busy, onRerun: rerun, onPickFiles: reset }),

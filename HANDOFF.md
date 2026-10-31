@@ -803,7 +803,7 @@ node tools/img-e2e.mjs "C:\path\deck.pptx"                    # 图片 OCR 链�
 3. 历史面板筛选/删除 + 看板交互。
 4. 给 `rapidocr.py` 输出行级框与置信度，`ocrPick: best` 才能按行合并而不是整页二选一。
 
-## 二十六、2026-10-31 · 1.13.0 复习资料版（`reportStyle: 'review'`）
+## 二十六、2026-10-31 · 1.13.0 复习资料版（`reportStyle: 'review'`）**← 已被第二十七节取代（选项改名为 Normal/MAX）**
 
 ### 状态
 
@@ -859,3 +859,41 @@ node tools/img-e2e.mjs "C:\path\deck.pptx"                    # 图片 OCR 链�
 2. 复习资料版的「整卷自测」：把各章 Q 汇总成一份不给答案的模拟卷（需要用户提示词里被截断的那一节）。
 3. `vision` 接 VLM，让图片页的实例/公式也能进 K/E/Q。
 4. 历史面板筛选/删除、看板交互。
+
+## 二十七、2026-10-31 · 1.14.0 Normal / MAX 两档报告能力
+
+### 状态
+
+| 项 | 值 |
+|---|---|
+| 本地版本 | **1.14.0** |
+| 面板 | 一行「报告模式：Normal ｜ MAX」（`aria-pressed` 标记选中），选 MAX 时下面提示成本 |
+| 配置 | `reportLevel: 'normal' | 'max'`（默认 `normal`）；旧请求参数 `reportStyle: 'brief' | 'review'` 仍识别 |
+| 测试 | `--unit` **48 项**、`--real` 11 项、`e2e-fake` 1 项、client 契约，全绿 |
+
+### 两档差异
+
+| | Normal（默认） | MAX |
+|---|---|---|
+| 每章形态 | 3-6 条要点 + 重点/难点/关键词 | 模块 → 知识点 K → 实例 E → 习题 Q + 参考答案 |
+| 每章原文窗口 | 3600 字 | **8000 字** |
+| 每章输出预算 | ~2600 token | **8192 token** |
+| 额外调用 | — | 复习框架（主题/学习目标/总结）+1 次 |
+| 报告标题 | 《课程》学习报告 | 《课程》复习资料 |
+
+### 实现要点（改这些地方就够）
+
+- `core/report-level.js`：唯一映射点 `normal↔brief` / `max↔review`；`resolveLevel()` 兼容
+  `brief`/`review`/大小写/空值/fallback，`styleOfLevel()` / `levelOfStyle()` / `describeLevel()`。
+- `index.js#optionsOf`：产出 `reportLevel` + 内部 `reportStyle`；优先级仍是请求 > 配置 > 默认。
+  health 回报 `reportLevel`；agent tool 参数已改为 `reportLevel`（保留 `reportStyle` 读取）。
+- `pipeline.js`：`job.reportLevel` 落盘（面板/历史都能读）；缓存键与去重键仍用 `reportStyle`。
+- `client.js`：两个按钮切换；**重跑时把当前档位一起发过去**（`{ reportLevel, ...options }`），
+  否则「换个方式重跑」会把 MAX 悄悄降成 Normal。
+
+### 下一步
+
+1. 重载后先用 MAX 跑一份真实课件（`L12_C10_异常与断言.pdf` 或 `实验1-高质量编程基础.pptx`），
+   看 K/E/Q 密度与答案质量，再决定要不要让 MAX 自动开 `coverage: 'thorough'`。
+2. 用户提示词在「五、B 答案区」处被截断；若还有「综合自测 / 模拟卷 / 格式要求」，补进 `REVIEW_SYSTEM`。
+3. 历史面板显示每条记录用的是 Normal 还是 MAX（数据已有 `job.reportLevel`）。

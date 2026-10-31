@@ -2,6 +2,19 @@
 
 按时间倒序。每条只记：改了什么、证据/数字、踩了什么坑。
 
+## 2026-10-31 · 1.14.0 Normal / MAX 两档报告能力
+
+- 用户要「选择项：功能性较弱的 Normal / 报告能力强的 MAX」。把 1.13 的「复习资料版」勾选升级成档位选择：
+  面板一行 `报告模式 Normal ｜ MAX`（`aria-pressed` + `.ca-btn.pri` 表示选中），配置项 `reportLevel`。
+- 新增 `core/report-level.js`：`normal↔brief`、`max↔review` 的**单点映射**（`resolveLevel` 兼容
+  `brief`/`review`/大小写/空值），`styleOfLevel`/`levelOfStyle`/`describeLevel`。
+- `index.js`：Config 用 `reportLevel`（`normal`/`max`）；`optionsOf` 同时产出 `reportLevel` 与内部 `reportStyle`，
+  请求里的旧字段 `reportStyle: 'review'` 仍能识别；health 回报 `reportLevel`；agent tool 参数改成 `reportLevel`。
+- `pipeline.js`：`job.reportLevel` 落盘；`client.js`：勾选换成两个按钮，选 MAX 时显示
+  「另加一次复习框架调用，耗时/token 约 2-3 倍」，并且**重跑也带上当前档位**（否则「换种方式重跑」会把 MAX 降成 Normal）。
+- MAX 再加强一点：每章原文窗口 6000 → **8000 字**（Normal 仍是 3600）。
+- 测试：`--unit` **48 项**（新增：Normal/MAX 映射；复习 e2e 改用 `reportLevel: 'max'` 并断言 `job.reportLevel`）。
+
 ## 2026-10-31 · 1.13.0 复习资料版（reportStyle: review）
 
 - 用户给了完整的复习资料提示词（分章分块、K/E/Q 编号、来源标签、先题后答、待确认），要求做成选项。
