@@ -728,7 +728,7 @@ ocrMaxPages / ocrEngine / ocrPython / provider / model / spacingMs / keepUploads
 | 本地版本 | **1.12.0**（`package.json`） |
 | npm | **已发布 1.12.0**（45 文件 / 447 KB unpacked），`latest = 1.12.0` |
 | GitHub | `main` = `ba3e7b7`，tag `v1.12.0` 已推 |
-| 测试 | `--unit` **43 项**、`--real` **11 项**、`tools/e2e-fake.mjs` 1 项、client 契约，全绿 |
+| 测试 | `--unit` **44 项**、`--real` **11 项**、`tools/e2e-fake.mjs` 1 项、client 契约，全绿 |
 | 宿主中的插件 | **仍是 1.11.1**：本次会话没有 plugin_manager 工具，需要你在 Plugins 页关/开一次（或重启 DSH），`health.version` 才会变成 1.12.0 |
 
 ### 这一版做了什么

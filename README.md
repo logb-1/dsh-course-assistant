@@ -441,7 +441,7 @@ course-assistant/
 | Host 路由 | `GET /course-assistant/health` → 200 `{llm:true,pdf:true}`；`upload`→`run`→`job`→`report(md)`→`report(pdf)` 全链路通过（`tools/smoke.mjs`） |
 | Client 槽位 | `main` key `course-assistant` active；`sidebar.panellist` id `course-assistant` active；`conversation.composer.dock` id `course-assistant-dock` active |
 | 语法 | `node --check` 全部通过（index.js / client.js / core/*.js） |
-| 回归 | `node tools/regress.mjs` 共 52 项：`--unit` **43 项**（合成 PDF、可信度/证据、CTM 字号、分章指标、单章重跑、同名章、PPTX 节映射、导出结构、OCR 分诊/择优/页号/图片缓存）任何机器可跑；`--real` 9 项需要课件；`--strict` 下 unit 缺文件即失败 |
+| 回归 | `node tools/regress.mjs` 共 55 项：`--unit` **44 项**（合成 PDF / 扫描件、可信度/证据、CTM 字号、分章指标、单章重跑、同名章、PPTX 节映射、导出结构、OCR 分诊/择优/页号/图片缓存）任何机器可跑；`--real` 11 项需要课件；`--strict` 下 unit 缺文件即失败 |
 | 真实课件 | `L12`（67 页 PDF）：OCR 分诊只读 26 页，正文 5 502 → 8 214 字；`实验1-高质量编程基础.pptx`：2 张图全读、186 字、2/14 个提示词带上 `[图片]` |
 | CI | `.github/workflows/ci.yml`：Windows + Ubuntu 矩阵跑 `--unit --strict` 与 client 契约测试；package job 校验 tarball 清单（防 `files` 漏文件）与"版本号不许写死" |
 | 分章质量 | `tools/gold/*.json` + `tools/segment-metrics.mjs`（windowdiff / 边界 F1，±1 页容差）；`deck-800`：章 10/11、windowdiff **0.061**、F1 **0.947** |

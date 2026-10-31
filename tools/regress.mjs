@@ -20,6 +20,7 @@ import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseFile } from '../core/parser.js'
 import { parsePdf } from '../core/pdf.js'
+import { cleanDoc } from '../core/text.js'
 import { buildOutline } from '../core/outline.js'
 import { assessQuality } from '../core/quality.js'
 import { detectDomain } from '../core/domain.js'
@@ -1101,6 +1102,69 @@ check('列检测：单栏 PDF 保持原顺序', () => {
     assert(at[i] > at[i - 1], `单栏被重排：${text.replace(/\n/g, ' | ')}`)
   }
   return '9 行原序'
+})
+
+/* ------------------------ synthetic scanned PDF (images) ------------------------ */
+
+/**
+ * A PDF whose pages draw one picture and no text — the shape of a scan. Our own
+ * parser has to keep those pages (that is what OCR reads), so this fixture locks
+ * in both "page kept" and "document recognised as a scan".
+ */
+function makeScannedPdf(pageCount) {
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '']
+  const kids = []
+  let next = 3
+  for (let i = 0; i < pageCount; i += 1) {
+    kids.push(`${next} 0 R`)
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im1 ${next + 2} 0 R >> >> /Contents ${next + 1} 0 R >>`,
+    )
+    const content = 'q 612 0 0 792 0 0 cm /Im1 Do Q'
+    objects.push(`<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}\nendstream`)
+    // 1x1 grayscale pixel: enough for /Subtype /Image to be recognised
+    const pixel = Buffer.from([0x80])
+    objects.push(
+      Buffer.concat([
+        Buffer.from(
+          `<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 1 >>\nstream\n`,
+          'latin1',
+        ),
+        pixel,
+        Buffer.from('\nendstream', 'latin1'),
+      ]),
+    )
+    next += 3
+  }
+  objects[1] = `<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${pageCount} >>`
+  const body = Buffer.concat(
+    objects.map((object, i) =>
+      Buffer.concat([
+        Buffer.from(`${i + 1} 0 obj\n`, 'latin1'),
+        Buffer.isBuffer(object) ? object : Buffer.from(`${object}\n`, 'latin1'),
+        Buffer.from('endobj\n', 'latin1'),
+      ]),
+    ),
+  )
+  return Buffer.concat([
+    Buffer.from('%PDF-1.4\n', 'latin1'),
+    body,
+    Buffer.from(`trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\n%%EOF\n`, 'latin1'),
+  ])
+}
+
+check('扫描版 PDF：只有图片的页不再被丢弃，整份判为扫描件', () => {
+  const doc = cleanDoc(parsePdf(makeScannedPdf(6), 'scan.pdf'))
+  assert(doc.pages.length === 6, `应保留 6 页，实际 ${doc.pages.length} 页`)
+  assert(doc.pages.every((page) => !page.text.trim()), '合成页不该有文本层')
+  assert(doc.pages.every((page) => page.images >= 1), `图片计数没读到：${doc.pages.map((p) => p.images).join(',')}`)
+  assert(doc.pages.every((page, i) => page.index === i + 1), '页号被压缩了')
+  const plan = planOcrPages(doc.pages, { mode: 'auto', maxPages: 60 })
+  assert(plan.scanned === true, '6 页全空应判为扫描件')
+  assert(plan.pages.length === 6, `扫描件应整份重读，实际只计划了 ${plan.pages.length} 页`)
+  const capped = planOcrPages(doc.pages, { mode: 'auto', maxPages: 4 })
+  assert(capped.pages.length === 4 && capped.deferred === 2, `上限记账不对：${capped.pages.length}/${capped.deferred}`)
+  return '6 页全部保留，按扫描件整份重读'
 })
 
 /* --------------------------------- runner --------------------------------- */
