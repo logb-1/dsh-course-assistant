@@ -20,7 +20,7 @@ const round = (n) => Math.round(n * 100) / 100
  * a CJK run of >=2 chars, or a latin/digit run of >=3 chars.
  * Glyph-code garbage ("w\t)Wy°a¼") scores low; real prose scores high.
  */
-function wordLikeRatio(text) {
+export function wordLikeRatio(text) {
   let total = 0
   let good = 0
   let i = 0

@@ -36,6 +36,46 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 附录不会为空：检索被风控或没有相关结果时，该行退化为
 `https://search.bilibili.com/all?keyword=<URL编码关键词>` 搜索入口。
 
+## 1.12.0 新增：页级 OCR 分诊（只读读不出来的那几页）
+
+以前 OCR 是整份开关：`ocr: true` 重读全文，默认一页不读。现在解析后先给每页文本层打分
+（字数 / 可疑字符率 / 成词率），只把「没有文字 / 只有几个字 / 字形乱码」的页交给 OCR：
+
+- 实测 `L12_C10_异常与断言.pdf`（67 页 C++ 讲义）：只读 **26 页**、约 7 秒，25 页换成 OCR 文本，
+  正文 5 502 → **8 214 字**，成词率 0.80，空页 0%。
+- 多数页没有文本层时判定为**扫描件**，自动整份重读（以前只会报「疑似扫描版」然后给空报告）。
+- `ocrMaxPages` 之外的页不再静默漏掉，报告里会写「还有 N 页超出 OCR 上限」。
+- **每页择优**：OCR 结果和文本层各自打分，可读的页不会被 OCR 覆盖，只有空页/乱码页才替换；
+  页面标题与 `（p.12）` 回链都用真实页号。
+
+同时修掉三个静默 bug（都是"报成功、其实没干活"）：
+
+| 问题 | 影响 | 修法 |
+|---|---|---|
+| `prepareDocs` 引用了不存在的 `options` | 1.11.1 起幻灯片图片 OCR **从未真正执行**，只在警告里留一行「图片 OCR 失败」 | python 路径从 OCR 配置一路传到引擎；识别逻辑抽成 `readImageTexts()` |
+| `store.readOcr()` 只认 `{pages}` 负载 | 图片 OCR 缓存**从未命中**，每次重跑都重新识别 | 返回完整负载，页面/图片两种缓存都能读 |
+| 只有图片的页被整页丢弃 | `L12` 实际 67 页，之前只解析出 **54 页**（13 页纯图片幻灯片从未进过报告），之后的页码还全部错位 | 有图即内容，保留该页且不压缩页号；pptx 按 `p:sldIdLst` 真实顺序编号 |
+
+配置新增 `ocrMode`（`auto`/`all`/`off`）与 `ocrPick`（`first`/`best`）；`ocrPick: best` 会用第二个
+引擎复读低分页再取高分（耗时翻倍，默认关）。两个引擎都支持按页读取（`ocr.ps1 -Pages`、
+`rapidocr.py --pages`），RapidOCR 还会逐页报置信度。
+
+## 1.6.0 – 1.11.1 新增（此前没写进 README 的部分）
+
+| 版本 | 新增 |
+|---|---|
+| 1.6.0 | 概念 DAG（成环/跨章反向边直接拒绝）+ 确定性调度（失败分类 + 重试阶梯 + AUTH 不再逐章重试）+ 报告思维导图 + 离线 HTML 看板 + 同参数任务去重 |
+| 1.6.1 | 历史面板（最近 100 条，点开即渲染）|
+| 1.7.0 | 幻灯片内嵌图片 OCR：`a:blip` → rels → `ppt/media`，按图片 sha 缓存；小图标/分隔线自动跳过 |
+| 1.8.0 | 分节保底选段（每小节至少留一段）+ 覆盖率审计（报告头写「要点覆盖 7/9 节，未覆盖：…」）|
+| 1.9.0 | 概念必须有原文依据（命中不了直接丢弃）+ `coverage: thorough` 逐节摘要 |
+| 1.10.0 | 关键词四源融合：模型 / 标题 / 本章 TF-IDF / 英文缩写（`IEEE754`、`x86-64` 不会被长度规则丢掉）|
+| 1.11.0 | OCR 预处理（短边放大、深色图才反色）+ 文本后处理（拆词合并、偏旁合并、全角转半角）+ CER 基准 4 张图：平均 9.9% → **1.1%** |
+| 1.11.1 | RapidOCR 图片通道跑通（与 Windows OCR 在基准图上 CER 持平）|
+
+同一时期还有：要点带页码回链、BM25 课件问答（`ask`）、考纲覆盖对照（`coverage`）、
+B 站分 P 精确到集、Anki CSV 与 `course.json` 导出、报告保留 90 天 + 删除接口。
+
 ## 1.2.0 新增：读不准时的处理
 
 **质量闸门**（解析后立即算，纯本地）——四项指标：每页字数、可疑字符率、空页率、成词率。判定 `good / fair / unusable`，报告头部直接写出来，例如：
@@ -45,7 +85,8 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 
 **面板反馈**：报告出来后问「这次结果符合你的预期吗？」，选"_不太行_"展开三条补救：换源文件（最优）／OCR 重读／关闭网课检索重跑。`/rerun` 复用原上传文件，不丢输入。
 
-**OCR 重读**（可选）：WinRT 渲染 + Windows OCR（zh-CN），约 1 秒/页，默认上限 60 页。仅 Windows；`health.ocr` 会用来说明是否可用。
+**OCR 重读**：WinRT 渲染 + Windows OCR（zh-CN），约 1 秒/页。1.12.0 起默认按页分诊（只读读不出来
+的页），面板上的「OCR 全量重读」是整份覆盖的兜底；详见上面 1.12.0 一节。
 
 **领域锚定**：从代码特征识别课程语言（`#include`/`std::`/`cout` → C++；`System.out` → Java…），然后
 
@@ -286,16 +327,20 @@ install_bundle(target="github:logb-1/dsh-course-assistant")
 | `withVideos` | `true` | 全局关闭 B 站检索 |
 | `provider` / `model` | profile 默认模型 | 覆盖总结模型（默认取 `agentDefaultModel`） |
 | `domain` | 自动识别 | 强制课程领域，如 `C++`；用于代码特征太碎、识别不出的文件 |
-| `ocrMaxPages` | `60` | OCR 重读的页数上限（1–400） |
+| `ocrMode` | `auto` | 页级 OCR：`auto` 只重读文字层不可用的页，`all` 整份重读，`off` 关闭 |
+| `ocrMaxPages` | `60` | 一次最多重读多少页（1–400），按文档顺序取 |
+| `ocrPick` | `first` | `best` 时低分页再用第二个引擎复读并取高分（耗时翻倍） |
 | `ocrEngine` | 自动 | `windows` / `rapidocr` |
 | `ocrPython` | `python` / `python3` | rapidocr 用的解释器 |
+| `images` / `imagesMax` | `ocr` / `40` | 幻灯片内嵌图片 OCR 开关与每份上限 |
+| `coverage` | `auto` | `fast` 不分节提示（省 token）/ `auto` / `thorough` 逐节摘要（每章最多 4 次调用） |
 | `spacingMs` | `1000` | B 站请求间隔（≥1000） |
 | `keepUploadsDays` | `7` | 上传文件保留天数（1–90），仍被任务引用的不会被删 |
 
 ## 依赖
 
-**零 npm 依赖**，只用 Node 内置能力：`node:zlib`（ZIP/deflate）、`node:crypto`（sha256/md5）、
-全局 `fetch`（B 站）、`officeToPdf`（Host 服务，可选，用于 PDF 导出）。
+除 `schemastery`（配置校验，1.4.0 起）外没有 npm 依赖，只用 Node 内置能力：`node:zlib`（ZIP/deflate）、
+`node:crypto`（sha256/md5）、全局 `fetch`（B 站）、`officeToPdf`（Host 服务，可选，用于 PDF 导出）。
 宿主侧依赖的 Harness 服务：`tools`、`webServer`（必需），`llm`、`agentDefaultModel`、`officeToPdf`（可选，缺失时降级）。
 
 ## 架构
@@ -312,20 +357,36 @@ course-assistant/
 ├── client.js             # Client：拖拽面板（main + sidebar.panellist + composer.dock 三处注册）
 ├── core/
 │   ├── zip.js            # 最小 ZIP 读写（OOXML 是 zip 容器；docx 导出也用它）
-│   ├── pdf.js            # PDF 文本层 + 书签（对象扫描 / 对象流 / Flate+ASCII85 / ToUnicode CMap / 大纲）
-│   ├── ooxml.js          # pptx / docx → 页文本 + 标题（占位符、字号、表格、标题样式）
+│   ├── pdf.js            # PDF 文本层 + 书签 + 字号 + 图片计数（对象扫描 / 对象流 / Flate+ASCII85 / ToUnicode CMap / 嵌入字体 cmap 反查）
+│   ├── ooxml.js          # pptx / docx → 页文本 + 标题（占位符、字号、表格、备注、节）
 │   ├── text.js           # 去页眉页脚/页码/模板行；md、txt 解析
 │   ├── parser.js         # 统一入口：文件 → { title, pages | blocks }
 │   ├── outline.js        # 目录识别：书签 → 标题层级 → §编号/章号 → 定长分块
+│   ├── ocr.js            # OCR 引擎注册表 + 按页读取 + 双引擎择优（ocrPdfDeep）
+│   ├── ocr-triage.js     # 页级分诊：哪些页要重读、OCR 文本要不要替换文本层
+│   ├── ocr-score.js      # 文本可信度打分（成词率 / 可疑字符 / 碎片行）
+│   ├── ocr-windows.js    # WinRT 引擎（Windows 内置）
+│   ├── ocr-rapidocr.js   # RapidOCR 引擎（跨平台，Python 可选依赖）
+│   ├── ocr-text.js       # OCR 后处理：拆词合并、偏旁合并、全角转半角
+│   ├── media.js          # pptx 内嵌图片抽取（a:blip → rels → ppt/media）
 │   ├── bili.js           # WBI 签名搜索 + 评分排序 + 合集识别 + 24h 缓存 + 风控降级
 │   ├── summarize.js      # 固定 JSON 提示词、并发、JSON 截断修复、本地兜底
+│   ├── sections.js       # 分节 + 每节保底选段
+│   ├── audit.js          # 要点覆盖率审计
+│   ├── keywords.js       # 关键词四源融合
+│   ├── graph.js          # 知识点 DAG：环检测 / 拓扑 / 前置校验
+│   ├── schedule.js       # 失败分类 + 重试阶梯 + 章节计划
+│   ├── knowledge.js      # 概念与前置知识抽取（带原文依据校验）
+│   ├── verify.js         # 引文核对与可信度分档
+│   ├── dashboard.js      # 离线 HTML 学习看板
+│   ├── search.js         # BM25 课件问答
 │   ├── report.js         # 报告拼装（附录两表）
 │   ├── docx.js           # Markdown → 最小 docx，供 PDF 导出
 │   ├── store.js          # 上传/任务/报告/TTL 缓存（原子写）
-│   └── pipeline.js       # 编排：解析→目录→(总结∥检索)→总结→报告
+│   └── pipeline.js       # 编排：解析→OCR 分诊→目录→(总结∥检索)→知识图→报告/看板
 ├── locale/{zh,en}.json   # 插件管理器里显示的名称与描述
 ├── icon.svg              # 自绘图标
-├── samples/              # 三个示例产物（pptx / md / pdf 输入）
+├── samples/              # 示例产物（pptx / md / pdf 输入）
 └── tools/                # 开发期自检脚本（不随包发布）
 ```
 
@@ -380,7 +441,8 @@ course-assistant/
 | Host 路由 | `GET /course-assistant/health` → 200 `{llm:true,pdf:true}`；`upload`→`run`→`job`→`report(md)`→`report(pdf)` 全链路通过（`tools/smoke.mjs`） |
 | Client 槽位 | `main` key `course-assistant` active；`sidebar.panellist` id `course-assistant` active；`conversation.composer.dock` id `course-assistant-dock` active |
 | 语法 | `node --check` 全部通过（index.js / client.js / core/*.js） |
-| 回归 | `node tools/regress.mjs` 共 22 项：`--unit` 13 项（合成 PDF、可信度/证据、CTM 字号、分章指标、单章重跑、同名章、PPTX 节映射、导出结构）任何机器可跑；`--real` 9 项需要课件；`--strict` 下 unit 缺文件即失败 |
+| 回归 | `node tools/regress.mjs` 共 52 项：`--unit` **43 项**（合成 PDF、可信度/证据、CTM 字号、分章指标、单章重跑、同名章、PPTX 节映射、导出结构、OCR 分诊/择优/页号/图片缓存）任何机器可跑；`--real` 9 项需要课件；`--strict` 下 unit 缺文件即失败 |
+| 真实课件 | `L12`（67 页 PDF）：OCR 分诊只读 26 页，正文 5 502 → 8 214 字；`实验1-高质量编程基础.pptx`：2 张图全读、186 字、2/14 个提示词带上 `[图片]` |
 | CI | `.github/workflows/ci.yml`：Windows + Ubuntu 矩阵跑 `--unit --strict` 与 client 契约测试；package job 校验 tarball 清单（防 `files` 漏文件）与"版本号不许写死" |
 | 分章质量 | `tools/gold/*.json` + `tools/segment-metrics.mjs`（windowdiff / 边界 F1，±1 页容差）；`deck-800`：章 10/11、windowdiff **0.061**、F1 **0.947** |
 | 解析 | pptx 34 页→10 章；pdf 5 页→11 章；docx 无标题样式→9 章（编号推断）；md→11 章 |
@@ -390,14 +452,17 @@ course-assistant/
 
 ## 已知限制
 
-- **扫描版 PDF** 没有文本层，只能拿到空文本 → 会报「疑似扫描版，需先 OCR」，请先转文字 PDF。
-- **加密 PDF** 直接拒绝；PDF 里 Type0 字体缺 `/ToUnicode` 时该页文字解不出来。
+- **扫描版 PDF**（1.12.0 起）会自动整份 OCR，不再只给空报告；但 OCR 对公式与小数不稳
+  （`2.3` → `23`、`0.95` → `0．95`），公式密集的页仍建议对照原图。
+- **深色代码截图**仍可能把 `0` 认成 `9`；规则层解决不了，需要视觉模型（`vision` 配置项已预留）。
+- **加密 PDF** 直接拒绝；PDF 里 Type0 字体缺 `/ToUnicode`、又没有嵌入 cmap 时该页文字解不出来。
+- **纯图页**只能拿到 OCR 出来的文字，图表的箭头/连线读不到。
 - **B 站是关键词检索，不是语义检索**：对「研究汇报」型课件（本示例 PPT 讲贸易政策）噪声明显，
   报告里同时给出搜索链接；标准课程（如 `复习&自学大纲`）命中率明显更好。风控时整轮降级为链接。
 - **系列课推荐**依赖标题里的「合集/全套/教程」特征，找不到合格项时只给搜索入口，不硬凑。
-- **纯图幻灯片**没有文字，只能给出标题级要点（模型被要求「不编造」，因此可能很短）。
 - **模型输出截断**（maxTokens 被推理吃掉）时用 JSON 修复 + 本地兜底摘要，此时该章会标「备注」。
-- 单次最多 12 个文件、单文件 60MB；上传保留 7 天，报告长期保留，请自行清理 `reports/`。
+- `coverage: 'thorough'` 每章最多 4 次调用，token 涨 2–3 倍。
+- 单次最多 12 个文件、单文件 60MB；上传保留 7 天，报告保留 90 天，请自行清理 `reports/`。
 - 不登录、不抓取任何 B 站账号信息；除 B 站公开搜索外不产生其他请求。
 
 ## 与社区同类插件的区别

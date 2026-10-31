@@ -299,6 +299,13 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
               `文本可读性：${qualityLabel(job.quality)}`,
             )
           : null,
+        job.ocr && job.ocr.pages
+          ? h(
+              'div',
+              { className: 'ca-phase', style: { marginTop: 4 } },
+              `页级 OCR：${job.ocr.pages}/${job.ocr.total} 页（${job.ocr.engine}${job.ocr.scanned ? '，扫描版' : ''}）· ${job.ocr.adopted} 页改用 OCR 文本`,
+            )
+          : null,
         job.domain
           ? h(
               'div',
@@ -534,10 +541,10 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
                   {
                     className: 'ca-btn',
                     disabled: busy || !health?.ocr,
-                    title: health?.ocr ? '用 OCR 重新读取页面' : '当前环境未启用 OCR',
+                    title: health?.ocr ? '不按分诊，整份文件用 OCR 重新读取' : '当前环境未启用 OCR',
                     onClick: () => onRerun({ ocr: true }),
                   },
-                  health?.ocr ? 'OCR 重读' : 'OCR 重读（未启用）',
+                  health?.ocr ? 'OCR 全量重读' : 'OCR 重读（未启用）',
                 ),
               ),
               h(

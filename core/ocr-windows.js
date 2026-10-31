@@ -12,6 +12,10 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const SCRIPT = join(HERE, 'ocr.ps1')
 
 function recognize(pdfPath, options = {}) {
+  // `pages` is a 1-based subset chosen by triage; without it read 1..maxPages
+  const wanted = Array.isArray(options.pages)
+    ? options.pages.filter((n) => Number.isInteger(n) && n > 0).slice(0, 400)
+    : null
   const maxPages = Math.max(1, Math.min(400, options.maxPages || 60))
   const scratch = mkdtempSync(join(tmpdir(), 'dsh-ocr-'))
   mkdirSync(scratch, { recursive: true })
@@ -31,13 +35,11 @@ function recognize(pdfPath, options = {}) {
       nativePdf,
       '-OutDir',
       nativeScratch,
-      '-First',
-      '0',
-      '-Last',
-      String(maxPages - 1),
       '-Width',
       String(options.width || 1600),
     ]
+    if (wanted?.length) args.push('-Pages', wanted.join(','))
+    else args.push('-First', '0', '-Last', String(maxPages - 1))
     const child = spawn('powershell.exe', args, { windowsHide: true })
     let buffer = ''
     let stderr = ''
@@ -58,7 +60,7 @@ function recognize(pdfPath, options = {}) {
         return
       }
       if (typeof msg.pageCount === 'number') {
-        total = Math.min(msg.pageCount, maxPages)
+        total = wanted?.length || Math.min(msg.pageCount, maxPages)
         return
       }
       if (typeof msg.page === 'number') {

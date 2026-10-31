@@ -184,20 +184,27 @@ export function parsePptx(buf, fileName) {
     )
   }
   const pages = []
+  let position = 0
   for (const name of order) {
+    // page numbers are *slide numbers*: they feed OCR (which reads a picture by
+    // its slide) and the "（p.12）" back-links, so they must not be compacted
+    position += 1
     const xml = zip.text(name)
     if (!xml) continue
     const s = extractSlide(xml)
-    if (!s.text) continue
+    const images = (xml.match(/<a:blip\b[^>]*r:embed=/g) || []).length
+    // a slide that is only a picture still has content — the OCR pass will read it
+    if (!s.text && !images) continue
     // speaker notes usually hold the full script; without them a slide deck
     // reads like a list of titles
     const notes = slideNotes(zip, name)
     const text = notes ? `${s.text}\n【备注】${notes}` : s.text
     pages.push({
-      index: pages.length + 1,
+      index: position,
       title: s.title,
       text,
       notes,
+      images,
       layout: slideLayoutType(zip, name),
       titleSize: s.titleSize,
       bodySize: s.bodySize,

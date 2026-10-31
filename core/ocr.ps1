@@ -3,6 +3,7 @@ param(
   [string]$OutDir = '',
   [string]$Image = '',
   [switch]$NoPreprocess,
+  [string]$Pages = '',
   [int]$First = 0,
   [int]$Last = -1,
   [int]$Width = 1600
@@ -132,13 +133,32 @@ if (-not $Pdf) {
 
 $file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Pdf)) ([Windows.Storage.StorageFile])
 $doc = Await ([Windows.Data.Pdf.PdfDocument]::LoadFromFileAsync($file)) ([Windows.Data.Pdf.PdfDocument])
-if ($Last -lt 0 -or $Last -ge $doc.PageCount) { $Last = $doc.PageCount - 1 }
+$numPages = $doc.PageCount
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
 $folder = Await ([Windows.Storage.StorageFolder]::GetFolderFromPathAsync($OutDir)) ([Windows.Storage.StorageFolder])
 
-Write-Output (ConvertTo-Json @{ pageCount = $doc.PageCount; first = $First; last = $Last } -Compress)
+# -Pages "3,17,18" reads exactly those 1-based pages (page-level triage);
+# otherwise the -First..-Last range is used, as before.
+$targets = @()
+if ($Pages) {
+  foreach ($token in $Pages.Split(',')) {
+    $n = 0
+    if ([int]::TryParse($token.Trim(), [ref]$n)) {
+      if ($n -ge 1 -and $n -le $numPages) { $targets += ($n - 1) }
+    }
+  }
+  if ($targets.Count -eq 0) {
+    Write-Output (ConvertTo-Json @{ error = 'no-valid-pages' } -Compress)
+    exit 4
+  }
+} else {
+  if ($Last -lt 0 -or $Last -ge $numPages) { $Last = $numPages - 1 }
+  $targets = @($First..$Last)
+}
 
-for ($i = $First; $i -le $Last; $i++) {
+Write-Output (ConvertTo-Json @{ pageCount = $numPages; first = $targets[0] + 1; last = $targets[$targets.Count - 1] + 1; pages = $targets.Count } -Compress)
+
+foreach ($i in $targets) {
   $page = $doc.GetPage($i)
   $name = "page-$($i + 1).png"
   $outFile = Await ($folder.CreateFileAsync($name, [Windows.Storage.CreationCollisionOption]::ReplaceExisting)) ([Windows.Storage.StorageFile])

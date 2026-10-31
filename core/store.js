@@ -277,8 +277,8 @@ export function createStore(dataDir) {
 
     readOcr(file) {
       try {
-        const data = JSON.parse(readFileSync(join(ocrDir, file), 'utf8'))
-        return data?.pages?.length ? data.pages : null
+        // whole payload: page OCR stores {pages}, image OCR stores {text}
+        return JSON.parse(readFileSync(join(ocrDir, file), 'utf8'))
       } catch {
         return null
       }

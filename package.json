@@ -1,6 +1,6 @@
 {
   "name": "dsh-course-assistant",
-  "version": "1.11.1",
+  "version": "1.12.0",
   "private": false,
   "type": "module",
   "description": "课程文件 → 目录识别 · 分章知识点总结 · B 站网课推荐 · 学习报告（DeepSeek Harness bundle）",

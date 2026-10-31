@@ -8,9 +8,15 @@
 #   concurrency      parallel chapter summaries, 1-5 (default 4)
 #   withVideos       default true; false skips every Bilibili request
 #   domain           force the course domain, e.g. 'C++' (default: auto-detected)
-#   ocrMaxPages      cap for OCR re-reads (default 60, 1-400)
+#   ocrMode          'auto' | 'all' | 'off' - page-level triage (default auto:
+#                    only pages whose text layer is empty or garbled are re-read)
+#   ocrMaxPages      cap for OCR page reads (default 60, 1-400)
+#   ocrPick          'first' | 'best' - 'best' re-reads low-score pages with the
+#                    second engine and keeps the better text (about 2x slower)
 #   ocrEngine        'windows' | 'rapidocr' | '' (auto)
 #   ocrPython        python executable for the rapidocr engine
+#   images/imagesMax slide-picture OCR: 'ocr' | 'off', max pictures per deck
+#   coverage         'auto' | 'fast' | 'thorough' (per-section summaries)
 #   provider/model   summary model; empty = the profile's default model
 #   spacingMs        Bilibili request spacing, >=1000 (default 1000)
 #   keepUploadsDays  upload retention (default 7)

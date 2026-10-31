@@ -53,7 +53,13 @@ export const Config = Schema.object({
   coverage: Schema.string().default('auto').description('要点覆盖：auto 自动，fast 不分节提示（最省），thorough 逐节摘要（每章最多 4 次调用）'),
   vision: Schema.string().default('').description('多模态模型（预留，留空关闭）'),
   domain: Schema.string().default('').description('强制课程领域（如 C++），留空自动识别'),
-  ocrMaxPages: Schema.natural().min(1).max(400).default(60).description('OCR 重读页数上限'),
+  ocrMaxPages: Schema.natural().min(1).max(400).default(60).description('OCR 重读页数上限（页级分诊选出的页，按文档顺序）'),
+  ocrMode: Schema.union([Schema.const('auto'), Schema.const('all'), Schema.const('off')])
+    .default('auto')
+    .description('PDF 页级 OCR：auto 只重读文字层不可用的页，all 整份重读，off 关闭'),
+  ocrPick: Schema.union([Schema.const('first'), Schema.const('best')])
+    .default('first')
+    .description('OCR 引擎择优：first 只用首选引擎，best 对低分页再用第二引擎复读并取高分（耗时翻倍）'),
   ocrEngine: Schema.union([Schema.const(''), Schema.const('windows'), Schema.const('rapidocr')])
     .default('')
     .description('OCR 引擎，留空自动选择'),
@@ -175,6 +181,8 @@ export function apply(ctx, config = {}) {
     concurrency: Math.max(1, Math.min(5, Number(raw.concurrency) || Number(config.concurrency) || 4)),
     ocr: raw.ocr === true,
     ocrMaxPages: Number(raw.ocrMaxPages) || Number(config.ocrMaxPages) || 60,
+    ocrMode: String(pick(raw.ocrMode) || pick(config.ocrMode) || 'auto'),
+    ocrPick: String(pick(raw.ocrPick) || pick(config.ocrPick) || 'first'),
     ocrEngine: pick(raw.ocrEngine) || pick(config.ocrEngine),
     ocrPython: pick(raw.ocrPython) || pick(config.ocrPython),
     domain: pick(raw.domain) || pick(config.domain),
@@ -473,6 +481,8 @@ export function apply(ctx, config = {}) {
           pdf: !!ctx.get('officeToPdf')?.convert,
           ocr: ocrAvailable(),
           ocrEngines: await ocrStatus(),
+          ocrMode: String(config.ocrMode || 'auto'),
+          ocrPick: String(config.ocrPick || 'first'),
           dataDir: store.dataDir,
           supported: [...SUPPORTED, '.ppt', '.doc', '.xls'],
           jobs: jobs.size,

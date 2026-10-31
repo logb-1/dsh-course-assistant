@@ -67,6 +67,32 @@ function relationsOf(zip, slideNumber) {
 }
 
 /**
+ * Slide part → display position. `slide7.xml` is not necessarily the 7th slide:
+ * the order lives in `p:sldIdLst`. Page numbers must follow the *display* order,
+ * otherwise OCR text lands on the wrong slide (and so does `（p.12）`).
+ */
+function slideOrder(zip) {
+  const pres = zip.has('ppt/presentation.xml') ? zip.read('ppt/presentation.xml')?.toString('utf8') || '' : ''
+  const relsXml = zip.has('ppt/_rels/presentation.xml.rels')
+    ? zip.read('ppt/_rels/presentation.xml.rels')?.toString('utf8') || ''
+    : ''
+  const rels = new Map()
+  for (const match of relsXml.matchAll(/<Relationship\b[^>]*>/g)) {
+    const id = /Id="([^"]+)"/.exec(match[0])?.[1]
+    const target = /Target="([^"]+)"/.exec(match[0])?.[1]
+    if (id && target) rels.set(id, target.replace(/^\.\.\//, 'ppt/').replace(/^\/?ppt\//, 'ppt/'))
+  }
+  const order = new Map()
+  let position = 0
+  for (const match of pres.matchAll(/<p:sldId\b[^>]*\br:id="([^"]+)"/g)) {
+    position += 1
+    const target = rels.get(match[1])
+    if (target) order.set(target, position)
+  }
+  return order
+}
+
+/**
  * @param {Buffer} buf pptx bytes
  * @param {{ minBytes?: number, minSide?: number, max?: number }} [limits]
  * @returns {Array<{ slide:number, name:string, sha:string, bytes:number, width:number|null, height:number|null, type:string, data:Buffer }>}
@@ -78,6 +104,7 @@ export function listPptxImages(buf, limits = {}) {
   const zip = readZip(buf)
   const seen = new Set()
   const out = []
+  const order = slideOrder(zip)
   const slides = zip
     .names()
     .map((name) => ({ name, match: SLIDE_RE.exec(name) }))
@@ -85,9 +112,10 @@ export function listPptxImages(buf, limits = {}) {
     .sort((a, b) => Number(a.match[1]) - Number(b.match[1]))
 
   for (const { name, match } of slides) {
-    const slide = Number(match[1])
+    const part = Number(match[1])
+    const slide = order.get(name) || part
     const xml = zip.read(name)?.toString('utf8') || ''
-    const rels = relationsOf(zip, slide)
+    const rels = relationsOf(zip, part)
     const embeds = new Set()
     for (const blip of String(xml).matchAll(/<a:blip\b[^>]*r:embed="([^"]+)"/g)) embeds.add(blip[1])
     for (const rid of embeds) {

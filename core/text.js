@@ -131,8 +131,12 @@ function finishBlocks(blocks, preamble, fileName, kind) {
 /** Strip furniture from slide/page docs; leaves block docs untouched. */
 export function cleanDoc(doc) {
   if (doc.pages?.length) {
-    doc.pages = stripFurniture(doc.pages, doc.title).filter((p) => p.text.trim().length > 0)
-    if (doc.pages.length) doc.pages = doc.pages.map((p, i) => ({ ...p, index: i + 1 }))
+    // Keep pages that carry a picture even without text: that is exactly what
+    // the OCR pass reads. Never renumber — `index` is the source page number and
+    // both OCR placement and "（p.12）" would silently point at the wrong page.
+    doc.pages = stripFurniture(doc.pages, doc.title).filter(
+      (p) => p.text.trim().length > 0 || Number(p.images) > 0,
+    )
   }
   if (doc.blocks?.length) {
     doc.blocks = doc.blocks

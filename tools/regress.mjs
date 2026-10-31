@@ -43,9 +43,12 @@ import { dedupeKeyFor } from '../core/pipeline.js'
 import { renderDashboardHtml } from '../core/dashboard.js'
 import { attachImageText, imageSize } from '../core/media.js'
 import { fixOcrArtifacts } from '../core/ocr-text.js'
+import { applyOcrPages, planOcrPages } from '../core/ocr-triage.js'
+import { scoreText } from '../core/ocr-score.js'
+import { ocrPdf, ocrPdfDeep, registerOcrEngine } from '../core/ocr.js'
 import { buildTopicProfile } from '../core/topic.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
-import { diffSummary, rerunChapter, runPipeline } from '../core/pipeline.js'
+import { diffSummary, readImageTexts, rerunChapter, runPipeline } from '../core/pipeline.js'
 
 const ARGV = process.argv.slice(2)
 const QUIET = ARGV.includes('--quiet')
@@ -107,6 +110,33 @@ real('领域锚定：C++ 课件识别为 C++', () => {
   const domain = detectDomain([doc])
   assert(domain?.name === 'C++', `识别为 ${domain?.name || 'null'}，应为 C++`)
   return `${domain.name} score=${domain.score}`
+})
+
+real('PDF 图片页：只有图片的页不再被丢弃，页号保持真实', () => {
+  if (!FILES.L12) return 'skip'
+  const doc = parseFile(FILES.L12, basename(FILES.L12))
+  // L12 真实页数 67（WinRT pageCount 与 PyMuPDF 一致）；此前只解析出 54 页
+  assert(doc.pages.length === 67, `L12 应解析出 67 页，实际 ${doc.pages.length} 页`)
+  const pictureOnly = doc.pages.filter((page) => !page.text.trim() && page.images > 0)
+  assert(pictureOnly.length >= 10, `只有图片的页应保留，实际 ${pictureOnly.length} 页`)
+  const sequential = doc.pages.every((page, i) => page.index === i + 1)
+  assert(sequential, `页号被压缩：${doc.pages.map((p) => p.index).join(',')}`)
+  return `67 页，其中 ${pictureOnly.length} 页只有图片`
+})
+
+real('OCR 分诊：真实课件只挑读不出来的页，不全量重读', () => {
+  if (!FILES.L12) return 'skip'
+  const doc = parseFile(FILES.L12, basename(FILES.L12))
+  const plan = planOcrPages(doc.pages, { mode: 'auto', maxPages: 60 })
+  assert(plan.pages.length > 0, '应该至少有几页需要重读')
+  assert(plan.pages.length < doc.pages.length * 0.6, `读了 ${plan.pages.length}/${doc.pages.length} 页，分诊没有省下来`)
+  assert(plan.scanned === false, 'L12 不该判成扫描件')
+  const noText = doc.pages.filter((page) => !page.text.trim()).map((page) => page.index)
+  assert(noText.length > 0, 'L12 应有纯图片页')
+  assert(noText.every((index) => plan.pages.includes(index)), `无文本页没进计划：${noText.join(',')}`)
+  const all = planOcrPages(doc.pages, { mode: 'all', maxPages: 60 })
+  assert(all.pages.length === 60 && all.deferred === doc.pages.length - 60, `all 模式上限记账不对：${all.pages.length}/${all.deferred}`)
+  return `${plan.pages.length}/67 页，${JSON.stringify(plan.reasons)}`
 })
 
 real('切章：幻灯片型 PDF 不再塌成 1 章', () => {
@@ -846,6 +876,176 @@ check('OCR 文本后处理：拆词合并、IEEE 纠正、全角转半角、偏�
   // 中文正文里的空格不该被当成代码处理，也不该被吃掉语义
   assert(fixOcrArtifacts('第 3 章 程序的机器级表示').includes('第 3 章'), '普通中文行应原样保留')
   return '4 类纠正均生效'
+})
+
+/* -------------------------- OCR triage and picking -------------------------- */
+
+const GOOD_LINE = '第二章 数据的机器级表示。本节介绍整数的补码表示与溢出判定方法。'
+const GOOD_PAGE = GOOD_LINE.repeat(3)
+// glyph codes decoded as Latin-1: every character is high-latin, so the page
+// scores as noise rather than as text (this is the L12 "includ fstrea" shape)
+const GARBLED = '½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞß½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞß'
+
+check('OCR 分诊：只重读文字层不可用的页', () => {
+  const pages = [
+    { index: 1, text: GOOD_PAGE },
+    { index: 2, text: '' },
+    { index: 3, text: GARBLED },
+    { index: 4, text: GOOD_PAGE },
+    { index: 5, text: 'w\t)Wy°a¼' },
+    ...Array.from({ length: 5 }, (_, i) => ({ index: i + 6, text: GOOD_PAGE })),
+  ]
+  const plan = planOcrPages(pages, { mode: 'auto', maxPages: 10 })
+  assert(plan.pages.join(',') === '2,3,5', `应只读第 2/3/5 页，实际 [${plan.pages.join(',')}]`)
+  assert(plan.weak === 3 && plan.total === 10, `弱页统计不对：${plan.weak}/${plan.total}`)
+  assert(plan.reasons.sparse === 2 && plan.reasons.noise === 1, `原因分类异常：${JSON.stringify(plan.reasons)}`)
+  assert(plan.scanned === false, '10 页里 3 页弱不该判成扫描版')
+  assert(plan.deferred === 0, '未超上限不该有顺延')
+  return `pages=[${plan.pages.join(',')}] ${JSON.stringify(plan.reasons)}`
+})
+
+check('OCR 分诊：无文本层的扫描件整份重读，超出上限的页有记录', () => {
+  const blank = Array.from({ length: 100 }, (_, i) => ({ index: i + 1, text: '' }))
+  const plan = planOcrPages(blank, { mode: 'auto', maxPages: 60 })
+  assert(plan.scanned === true, '100 页全空应判为扫描版')
+  assert(plan.pages.length === 60, `上限 60 页，实际 ${plan.pages.length}`)
+  assert(plan.deferred === 40, `应记录 40 页顺延，实际 ${plan.deferred}`)
+  assert(plan.pages[0] === 1 && plan.pages[59] === 60, '应按文档顺序取前 60 页')
+
+  const readable = [
+    { index: 1, text: GOOD_PAGE },
+    { index: 2, text: GOOD_PAGE },
+    { index: 3, text: GOOD_PAGE },
+  ]
+  const all = planOcrPages(readable, { mode: 'all', maxPages: 60 })
+  assert(all.pages.join(',') === '1,2,3', `all 模式应读整份，实际 [${all.pages.join(',')}]`)
+  const off = planOcrPages(readable, { mode: 'off', maxPages: 60 })
+  assert(off.pages.length === 0, 'off 模式不该读任何页')
+  // 全部可读时 auto 一页都不读（这正是省时间的地方）
+  const none = planOcrPages(readable, { mode: 'auto', maxPages: 60 })
+  assert(none.pages.length === 0 && none.weak === 0, `可读文件白跑 OCR：${none.pages.length} 页`)
+  return `scan 60/100 (deferred 40), all=3, auto=0`
+})
+
+check('OCR 择优：可读文字层不被覆盖，空页与乱码页才换成 OCR 文本', () => {
+  const pages = [
+    { index: 1, text: GOOD_PAGE },
+    { index: 2, text: '' },
+    { index: 3, text: GARBLED },
+  ]
+  const ocr = [
+    { index: 1, text: GOOD_PAGE },
+    { index: 2, text: '第二页的正文：抛出异常的语法是 throw 表达式，由 catch 捕获。' },
+    { index: 3, text: '第三页的正文：栈展开会依次调用局部对象的析构函数。' },
+  ]
+  const merged = applyOcrPages(pages, ocr, {})
+  assert(merged.adopted.join(',') === '2,3', `应替换第 2、3 页，实际 [${merged.adopted.join(',')}]`)
+  assert(merged.kept.join(',') === '1', '可读页被 OCR 覆盖了')
+  assert(merged.pages[1].ocr === true, '换过文本的页要打 ocr 标记')
+  assert(merged.pages[1].text === ocr[1].text, '第 2 页没有换成 OCR 文本')
+  assert(merged.pages[0].text === GOOD_PAGE, '第 1 页文本被改动了')
+  // 乱码页换掉后字数可能变少（乱码本来占位更多），净增为负是正常的
+  assert(merged.chars !== 0, '净增字数没有被统计')
+  // 文字层可读但 OCR 也读得出：以文字层为准（margin 内不替换）
+  const tie = applyOcrPages([{ index: 4, text: GOOD_PAGE }], [{ index: 4, text: GOOD_LINE }], {})
+  assert(tie.adopted.length === 0, '分数相近时不该替换文字层')
+  return `adopted=[${merged.adopted.join(',')}] kept=[${merged.kept.join(',')}] 净增 ${merged.chars} 字`
+})
+
+check('OCR 引擎：请求哪几页就回哪几页，页号不被重排', async () => {
+  const calls = []
+  registerOcrEngine({
+    id: 'fake-pages',
+    label: '测试引擎',
+    platform: 'any',
+    available: () => true,
+    availableSync: () => true,
+    recognize: async (file, options) => {
+      calls.push({ file, pages: options.pages })
+      return (options.pages || []).map((index) => ({ index, text: `第 ${index} 页的正文内容，用来确认页号没有被重排。` }))
+    },
+  })
+  const deep = await ocrPdfDeep('C:/fake.pdf', { engine: 'fake-pages', pages: [7, 9] })
+  assert(deep.pages.map((p) => p.index).join(',') === '7,9', `页号被重排：[${deep.pages.map((p) => p.index).join(',')}]`)
+  assert(calls[0].pages.join(',') === '7,9', 'page 子集没有传给引擎')
+  const only = await ocrPdf('C:/fake.pdf', { engine: 'fake-pages', pages: [12] })
+  assert(only.length === 1 && only[0].index === 12, `ocrPdf 丢了页号：[${only.map((p) => p.index).join(',')}]`)
+  assert(scoreText(only[0].text).score > 0.8, `正常中文页得分偏低：${scoreText(only[0].text).score}`)
+  return '7,9 / 12'
+})
+
+check('OCR 择优：低分页交第二引擎复读，取分高的一份', async () => {
+  let secondCalls = 0
+  registerOcrEngine({
+    id: 'fake-bad',
+    label: '劣质引擎',
+    platform: 'any',
+    available: () => true,
+    availableSync: () => true,
+    recognize: async (file, options) => (options.pages || []).map((index) => ({ index, text: GARBLED })),
+  })
+  registerOcrEngine({
+    id: 'fake-good',
+    label: '优质引擎',
+    platform: 'any',
+    available: () => true,
+    availableSync: () => true,
+    recognize: async (file, options) => {
+      secondCalls += 1
+      return (options.pages || []).map((index) => ({
+        index,
+        text: '这一页由第二引擎读出：异常对象的栈展开过程会依次析构局部变量。',
+      }))
+    },
+  })
+  const deep = await ocrPdfDeep('C:/fake.pdf', {
+    engine: 'fake-bad',
+    candidates: ['fake-bad', 'fake-good'],
+    pick: 'best',
+    pages: [1, 2, 3],
+  })
+  assert(deep.stats.escalated === 3, `应升级 3 页，实际 ${deep.stats.escalated}`)
+  assert(deep.stats.improved === 3, `应改进 3 页，实际 ${deep.stats.improved}`)
+  assert(secondCalls === 1, `第二引擎应只被调用一次，实际 ${secondCalls}`)
+  assert(deep.pages.every((p) => p.engine === 'fake-good'), '低分页没有换成第二引擎的结果')
+
+  // pick=first（默认）不该调用第二引擎：这是"耗时翻倍"开关的边界
+  const before = secondCalls
+  const single = await ocrPdfDeep('C:/fake.pdf', { engine: 'fake-bad', candidates: ['fake-bad', 'fake-good'], pages: [1] })
+  assert(single.stats.escalated === 0 && secondCalls === before, 'pick=first 时不该升级')
+  return `escalated=${deep.stats.escalated} improved=${deep.stats.improved}`
+})
+
+check('图片 OCR：命中缓存不再识别，python 一路传到引擎', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ca-img-'))
+  const calls = []
+  try {
+    registerOcrEngine({
+      id: 'fake-img',
+      label: '图片测试引擎',
+      platform: 'any',
+      available: () => true,
+      availableSync: () => true,
+      recognize: async () => [],
+      recognizeImage: async (file, options) => {
+        calls.push({ file, options })
+        return '关系表达式 2147483647 > 0 的判定'
+      },
+    })
+    const images = [{ sha: 'abc123', type: 'png', name: 'image1.png', slide: 2, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }]
+    const store = createStore(dir)
+    const first = await readImageTexts(images, { store, engine: 'fake-img', python: 'C:/fake/python.exe' })
+    assert(calls.length === 1, `第一次应识别 1 张，实际 ${calls.length}`)
+    assert(calls[0].options.python === 'C:/fake/python.exe', `python 没传到引擎：${JSON.stringify(calls[0].options)}`)
+    assert(first.read === 1 && first.chars > 0, `识别结果没回填：${JSON.stringify({ read: first.read, chars: first.chars })}`)
+    assert(first.texts.get(2)?.[0].includes('2147483647'), '识别文本没挂到第 2 页')
+    const second = await readImageTexts(images, { store, engine: 'fake-img', python: 'C:/fake/python.exe' })
+    assert(calls.length === 1, `第二次应命中缓存、不再识别，实际又调了 ${calls.length - 1} 次`)
+    assert(second.read === 1 && second.chars === first.chars, '缓存命中的结果与首跑不一致')
+    return `${first.chars} 字，第二次 0 次识别`
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 /* --------------------- synthetic PDFs (layout fixtures) --------------------- */

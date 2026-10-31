@@ -945,9 +945,27 @@ function pageText(objects, page) {
     const content = collectStream(objects, ref)
     if (content) collected.push(...contentToText(content, fonts))
   }
-  if (!collected.length) return { text: '', lines: [] }
+  // How many pictures the page draws. OCR triage uses this to tell a scanned
+  // page (nothing but an image) from a title/divider page (nothing at all):
+  // only the former can produce text.
+  const images = countImages(objects, resDict)
+  if (!collected.length) return { text: '', lines: [], images }
   const ordered = orderByColumns(collected, pageWidthOf(objects, page))
-  return { text: cleanup(ordered.map((line) => line.text).join('\n')), lines: ordered }
+  return { text: cleanup(ordered.map((line) => line.text).join('\n')), lines: ordered, images }
+}
+
+/** Count `/Subtype /Image` XObjects in a page's resource dictionary. */
+function countImages(objects, resDict) {
+  if (!resDict) return 0
+  const node = dictRef(resDict, 'XObject')
+  const dict = node?.dict ?? (node?.ref ? objects.get(node.ref)?.dict : null) ?? null
+  if (!dict) return 0
+  let count = 0
+  for (const m of dict.matchAll(/\/([^\s/<>\[\]]+)\s+(\d+)\s+\d+\s+R/g)) {
+    const obj = objects.get(Number(m[2]))
+    if (obj && /\/Subtype\s*\/Image\b/.test(obj.dict)) count += 1
+  }
+  return count
 }
 
 /**
@@ -1052,11 +1070,19 @@ export function parsePdf(buf, fileName) {
   const { objects } = scanObjects(buf)
   expandObjectStreams(objects)
   const pages = []
+  // Empty pages are kept on purpose: a scanned page must keep its real page
+  // number so OCR text lands back on it (and so `（p.17）` means something).
+  let pageNumber = 0
   for (const p of pageList(objects)) {
-    const { text, lines } = pageText(objects, p)
-    if (!text) continue
-    const title = pickTitle(text)
-    pages.push({ index: pages.length + 1, title, text, heading: headingOf(lines) })
+    pageNumber += 1
+    const { text, lines, images } = pageText(objects, p)
+    pages.push({
+      index: pageNumber,
+      title: text ? pickTitle(text) : '',
+      text,
+      heading: headingOf(lines),
+      images: images || 0,
+    })
   }
   const outline = readOutline(objects).filter((i) => i.title && i.level <= 3)
   let title = outline[0]?.title || ''

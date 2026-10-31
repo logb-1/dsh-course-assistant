@@ -49,6 +49,9 @@ function recognizeImage(imagePath, options = {}) {
 }
 
 function recognize(pdfPath, options = {}) {
+  const wanted = Array.isArray(options.pages)
+    ? options.pages.filter((n) => Number.isInteger(n) && n > 0).slice(0, 400)
+    : null
   const maxPages = Math.max(1, Math.min(400, options.maxPages || 60))
   const args = options.image
     ? [SCRIPT, '--image', pdfPath]
@@ -56,10 +59,9 @@ function recognize(pdfPath, options = {}) {
         SCRIPT,
         '--pdf',
         pdfPath,
-        '--first',
-        '0',
-        '--last',
-        String(maxPages - 1),
+        ...(wanted?.length
+          ? ['--pages', wanted.join(',')]
+          : ['--first', '0', '--last', String(maxPages - 1)]),
         '--dpi',
         String(Math.round((Number(options.width) || 1600) / 8.5)),
       ]
@@ -82,9 +84,15 @@ function recognize(pdfPath, options = {}) {
         reject(new Error(`RapidOCR 不可用：${msg.error}`))
         return
       }
-      if (typeof msg.pageCount === 'number') total = Math.min(msg.pageCount, maxPages)
+      if (typeof msg.pages === 'number') total = msg.pages
+      else if (typeof msg.pageCount === 'number') total = wanted?.length || Math.min(msg.pageCount, maxPages)
       if (typeof msg.page === 'number') {
-        pages.push({ index: msg.page, title: '', text: msg.text || '' })
+        pages.push({
+          index: msg.page,
+          title: '',
+          text: msg.text || '',
+          score: typeof msg.score === 'number' ? msg.score : undefined,
+        })
         options.onProgress?.(pages.length, total || pages.length)
       }
     }

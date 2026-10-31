@@ -18,7 +18,8 @@ import { summarizeChapter, summarizeCourse, mapLimit, localSummary, CHAPTER_PROM
 import { buildReport } from './report.js'
 import { renderDashboardHtml } from './dashboard.js'
 import { assessQuality, describeQuality } from './quality.js'
-import { ocrPdf, ocrImage, ocrStatus } from './ocr.js'
+import { ocrPdfDeep, ocrImage, ocrStatus } from './ocr.js'
+import { OCR_MODES, applyOcrPages, planOcrPages } from './ocr-triage.js'
 import { attachImageText, listPptxImages } from './media.js'
 import { classifyError, planChapters, nextChapterAction, FAILURE } from './schedule.js'
 import { auditCoverage, describeCoverage, summarizeCoverage } from './audit.js'
@@ -36,11 +37,44 @@ export function ocrCachePath(store, pdfPath, options = {}) {
   const bytes = readFileSync(pdfPath)
   const digest = createHash('sha256').update(bytes).digest('hex').slice(0, 32)
   const engine = options.engine || 'auto'
-  const pages = Number(options.maxPages) || 60
-  return { key: `${digest}-${engine}-${pages}`, file: `${digest}-${engine}-${pages}.json` }
+  const mode = options.mode || 'auto'
+  // the plan is part of the identity: a different page subset is different work
+  const plan = Array.isArray(options.pages) && options.pages.length ? `-${createHash('sha256').update(options.pages.join(',')).digest('hex').slice(0, 8)}` : ''
+  return { key: `${digest}-${engine}-${mode}${plan}`, file: `${digest}-${engine}-${mode}${plan}.json` }
 }
 
 const sha = (text) => createHash('sha256').update(text).digest('hex').slice(0, 24)
+
+/**
+ * The OCR settings a run should use.
+ *
+ * `ocr: true` is the panel's "re-read every page" button (the pre-1.12
+ * behaviour); without it the mode comes from config and defaults to `auto`,
+ * which only re-reads pages whose text layer is unusable.
+ */
+export function ocrOptionsOf(options = {}) {
+  return {
+    mode: options.ocr === true ? 'all' : OCR_MODES.includes(options.ocrMode) ? options.ocrMode : 'auto',
+    engine: options.ocrEngine || '',
+    python: options.ocrPython || '',
+    maxPages: Math.max(1, Number(options.ocrMaxPages) || 60),
+    pick: options.ocrPick === 'best' ? 'best' : 'first',
+  }
+}
+
+/** A rerun must read the same pages as the original job, or its text drifts. */
+export function replayOcrOptions(previous, options = {}) {
+  const base = ocrOptionsOf(options)
+  if (!previous) return base
+  return {
+    ...base,
+    // jobs recorded before 1.12 have no mode: their behaviour was a full re-read
+    mode: OCR_MODES.includes(previous.mode) ? previous.mode : 'all',
+    engine: previous.engine && previous.engine !== 'auto' ? previous.engine : base.engine,
+    maxPages: Math.max(1, Number(previous.maxPages) || base.maxPages),
+    pick: previous.pick === 'best' ? 'best' : base.pick,
+  }
+}
 
 export const JOB_SCHEMA_VERSION = 2
 
@@ -136,12 +170,16 @@ export function dedupeKeyFor(inputs, options, llm) {
     .map((file) => file?.sha256 || file?.name || '')
     .sort()
     .join('+')
+  const ocr = ocrOptionsOf(options || {})
   const scope = [
     llm?.provider || '-',
     llm?.model || '-',
     options?.withVideos === false ? 'v0' : 'v1',
     options?.knowledge === false ? 'k0' : 'k1',
     options?.domain || '',
+    // OCR settings change the text the model sees, so they change the job
+    `o:${ocr.mode}${ocr.pick === 'best' ? '+best' : ''}`,
+    `i:${options?.images?.mode || 'ocr'}:${Number(options?.images?.max) || 40}`,
   ].join('|')
   return createHash('sha256').update(files).update('|').update(scope).digest('hex').slice(0, 16)
 }
@@ -155,7 +193,7 @@ export function dedupeKeyFor(inputs, options, llm) {
  * same documents as the original job, otherwise chapter numbers drift.
  * OCR results are cached by content hash so a rerun never re-runs OCR.
  */
-async function prepareDocs({ inputs, store, ocr, images, warnings, push }) {
+async function prepareDocs({ inputs, store, ocr, images, warnings, push, signal }) {
   const docs = []
   const files = []
   for (const input of inputs) {
@@ -193,47 +231,76 @@ async function prepareDocs({ inputs, store, ocr, images, warnings, push }) {
   if (dropped.length) warnings.push(`同名的 PDF 已跳过：${dropped.join('、')} 的文本更可靠`)
   const usable = dropped.length ? kept : docs
 
-  /* ---------------- optional OCR re-read ---------------- */
+  /* ---------------- OCR: page-level triage ---------------- */
+  // Instead of "OCR everything or nothing", score each page and re-read only the
+  // pages whose text layer is empty, garbled or too thin. `ocrMode: 'all'` keeps
+  // the old whole-document re-read for when the layer is uniformly bad.
   let ocrInfo = null
-  if (ocr?.enabled === true) {
-    const requested = ocr.engine
-    const maxPages = Number(ocr.maxPages) || 60
+  const ocrMode = OCR_MODES.includes(ocr?.mode) ? ocr.mode : ocr?.mode === true ? 'all' : 'auto'
+  const ocrPdfTargets = usable.filter((d) => d.kind === 'pdf' && d.sourcePath)
+  if (ocrPdfTargets.length && ocrMode !== 'off') {
     const engines = await ocrStatus()
-    const ready = requested ? engines.find((e) => e.id === requested)?.available : engines.some((e) => e.available)
-    const targets = usable.filter((d) => d.kind === 'pdf' && d.sourcePath)
-    if (!ready) {
-      warnings.push(
-        requested
-          ? `OCR 引擎 ${requested} 不可用：${engines.find((e) => e.id === requested)?.label || '未知引擎'}`
-          : 'OCR 不可用：没有检测到 OCR 引擎（Windows 内置 WinRT；其他平台 pip install rapidocr_onnxruntime pymupdf）',
-      )
-    } else {
-      ocrInfo = { engine: requested || 'auto', maxPages }
-    }
-    for (const doc of ready ? targets : []) {
+    const candidates = engines.filter((e) => e.available).map((e) => e.id)
+    const requested = ocr.engine
+    const primary = requested && candidates.includes(requested) ? requested : candidates[0] || ''
+    const maxPages = Math.max(1, Number(ocr.maxPages) || 60)
+    const pick = ocr.pick === 'best' ? 'best' : 'first'
+    const totals = { pages: 0, deferred: 0, adopted: 0, kept: 0, chars: 0, scanned: false, escalated: 0, improved: 0 }
+    for (const doc of ocrPdfTargets) {
+      const plan = planOcrPages(doc.pages || [], { mode: ocrMode, maxPages })
+      if (!plan.pages.length) continue
+      if (!primary) {
+        warnings.push(
+          `${doc.name} 有 ${plan.pages.length} 页文字层不可用，但当前环境没有 OCR 引擎（Windows 内置 WinRT；其他平台 pip install rapidocr_onnxruntime pymupdf）`,
+        )
+        continue
+      }
       try {
-        const cache = ocrCachePath(store, doc.sourcePath, { engine: requested, maxPages })
-        let pages = store.readOcr?.(cache.file) || null
+        const cache = ocrCachePath(store, doc.sourcePath, { engine: primary, mode: ocrMode, pages: plan.pages })
+        const cached = store.readOcr?.(cache.file)
+        let pages = cached?.pages?.length ? cached.pages : null
+        let stats = cached?.stats || null
         if (pages) {
-          push({ message: `OCR 缓存命中：${doc.name}`, progress: 0.06 })
+          push({ message: `OCR 缓存命中：${doc.name}（${pages.length} 页）`, progress: 0.06 })
         } else {
-          push({ phase: 'ocr', message: `OCR 重读：${doc.name}`, progress: 0.05 })
-          pages = await ocrPdf(doc.sourcePath, {
-            engine: requested,
-            python: ocr.python,
+          push({
+            phase: 'ocr',
+            message: `OCR 分诊：${doc.name} 读 ${plan.pages.length}/${plan.total} 页${plan.scanned ? '（扫描版）' : ''}`,
+            progress: 0.05,
+          })
+          const deep = await ocrPdfDeep(doc.sourcePath, {
+            engine: primary,
+            candidates,
+            pick,
+            pages: plan.pages,
             maxPages,
+            python: ocr.python,
             onProgress: (done, total) =>
               push({
                 message: `OCR 第 ${done}/${total || '?'} 页：${doc.name}`,
                 progress: Math.min(0.16, 0.05 + 0.11 * (done / Math.max(1, total || done))),
               }),
+            signal,
           })
-          if (pages?.length) store.writeOcr?.(cache.file, { pages, engine: requested || 'auto', maxPages, sha: cache.key })
+          pages = deep.pages
+          stats = deep.stats
+          if (pages?.length) store.writeOcr?.(cache.file, { pages, engine: primary, mode: ocrMode, plan: plan.pages, stats, sha: cache.key })
         }
         if (pages?.length) {
-          doc.pages = pages.map((p, i) => ({ index: i + 1, title: p.title || '', text: p.text }))
-          doc.text = pages.map((p) => p.text).join('\n\n')
+          // per page: keep a readable text layer, take OCR where it is better
+          const merged = applyOcrPages(doc.pages, pages, { margin: 0.05 })
+          doc.pages = merged.pages
+          doc.text = doc.pages.map((p) => p.text).join('\n\n')
           doc.ocr = true
+          totals.pages += pages.length
+          totals.adopted += merged.adopted.length
+          totals.kept += merged.kept.length
+          totals.chars += merged.chars
+          totals.scanned = totals.scanned || plan.scanned
+          if (stats) {
+            totals.escalated += Number(stats.escalated) || 0
+            totals.improved += Number(stats.improved) || 0
+          }
           const row = files.find((f) => f.name === doc.name)
           if (row) {
             row.pages = doc.pages.length
@@ -242,6 +309,27 @@ async function prepareDocs({ inputs, store, ocr, images, warnings, push }) {
         }
       } catch (error) {
         warnings.push(`OCR 失败（${doc.name}）：${error.message}`)
+      }
+      if (plan.deferred > 0) {
+        warnings.push(`${doc.name} 还有 ${plan.deferred} 页超出 OCR 上限（${maxPages} 页），可调大 ocrMaxPages`)
+        totals.deferred += plan.deferred
+      }
+    }
+    if (totals.pages) {
+      ocrInfo = {
+        mode: ocrMode,
+        engine: primary,
+        pick,
+        maxPages,
+        total: ocrPdfTargets.reduce((sum, d) => sum + (d.pages?.length || 0), 0),
+        pages: totals.pages,
+        deferred: totals.deferred,
+        adopted: totals.adopted,
+        kept: totals.kept,
+        chars: totals.chars,
+        scanned: totals.scanned,
+        escalated: totals.escalated,
+        improved: totals.improved,
       }
     }
   }
@@ -255,7 +343,8 @@ async function prepareDocs({ inputs, store, ocr, images, warnings, push }) {
   let imageInfo = null
   if (images?.mode === 'ocr') {
     const engines = await ocrStatus()
-    const ready = images.engine ? engines.find((e) => e.id === images.engine)?.available : engines.some((e) => e.available)
+    const candidates = engines.filter((e) => e.available).map((e) => e.id)
+    const ready = images.engine ? candidates.includes(images.engine) : candidates.length > 0
     const targets = usable.filter((d) => d.kind === 'pptx' && d.sourcePath)
     if (targets.length && !ready) {
       warnings.push('图片 OCR 不可用：没有检测到 OCR 引擎，幻灯片里的图片本轮跳过')
@@ -270,45 +359,71 @@ async function prepareDocs({ inputs, store, ocr, images, warnings, push }) {
           if (!found.length) continue
           total += found.length
           push({ phase: 'ocr', message: `读取幻灯片图片：${doc.name}（${found.length} 张）`, progress: 0.07 })
-          const bySlide = new Map()
-          for (const image of found) {
-            const cacheName = `img-${image.sha}.json`
-            let text = null
-            const cached = store.readOcr?.(cacheName)
-            if (cached && typeof cached.text === 'string') text = cached.text
-            else {
-              const ext = image.type === 'jpeg' ? 'jpg' : 'png'
-              const temp = join(tmpdir(), `ca-img-${image.sha}.${ext}`)
-              try {
-                writeFileSync(temp, image.data)
-                text = await ocrImage(temp, { engine: images.engine, python: options?.ocrPython })
-              } catch (error) {
-                warnings.push(`图片 OCR 失败：${image.name} — ${error.message}`)
-              } finally {
-                rmSync(temp, { force: true })
-              }
-              if (text != null) store.writeOcr?.(cacheName, { text })
-            }
-            if (!text || !text.trim()) continue
-            read += 1
-            chars += text.length
-            if (!bySlide.has(image.slide)) bySlide.set(image.slide, [])
-            bySlide.get(image.slide).push(text)
-            push({ message: `图片 OCR ${read}/${total}`, progress: 0.07 })
-          }
+          const result = await readImageTexts(found, {
+            store,
+            engine: images.engine,
+            candidates,
+            python: ocr?.python,
+            warnings,
+            onProgress: (done) => push({ message: `图片 OCR ${done}/${total}`, progress: 0.07 }),
+          })
+          read += result.read
+          chars += result.chars
           for (const page of doc.pages || []) {
-            const texts = bySlide.get(page.index)
+            const texts = result.texts.get(page.index)
             if (texts?.length) Object.assign(page, attachImageText(page, texts))
           }
         } catch (error) {
           warnings.push(`图片抽取失败：${doc.name} — ${error.message}`)
         }
       }
-      if (total) imageInfo = { engine: images.engine || 'auto', images: total, read, chars }
+      if (total) imageInfo = { engine: images.engine || candidates[0] || 'auto', images: total, read, chars }
     }
   }
 
   return { docs: usable, files, dropped, ocrInfo, imageInfo }
+}
+
+/**
+ * OCR every slide picture, caching by image content hash.
+ *
+ * Split out of prepareDocs on purpose: this is the only place that knows both
+ * the cache and the engine plumbing, and both used to fail silently (a stale
+ * `options` reference and a cache reader that only understood page payloads).
+ *
+ * @param {Array<{sha:string,type:string,name:string,slide:number,data:Buffer}>} images
+ * @returns {Promise<{texts:Map<number,string[]>, read:number, chars:number}>}
+ */
+export async function readImageTexts(images, { store, engine, candidates, python, warnings = [], onProgress } = {}) {
+  const texts = new Map()
+  let read = 0
+  let chars = 0
+  for (const image of images || []) {
+    const cacheName = `img-${image.sha}.json`
+    let text = null
+    const cached = store?.readOcr?.(cacheName)
+    if (cached && typeof cached.text === 'string') text = cached.text
+    else {
+      const ext = image.type === 'jpeg' ? 'jpg' : 'png'
+      const temp = join(tmpdir(), `ca-img-${image.sha}.${ext}`)
+      try {
+        writeFileSync(temp, image.data)
+        text = await ocrImage(temp, { engine, candidates, python })
+      } catch (error) {
+        warnings.push(`图片 OCR 失败：${image.name} — ${error.message}`)
+      } finally {
+        rmSync(temp, { force: true })
+      }
+      if (text != null) store?.writeOcr?.(cacheName, { text })
+    }
+    if (!text || !text.trim()) continue
+    read += 1
+    chars += text.length
+    if (!texts.has(image.slide)) texts.set(image.slide, [])
+    texts.get(image.slide).push(text)
+    onProgress?.(read)
+  }
+  return { texts, read, chars }
 }
 
 /** Input manifest: what the job consumed, in a form that survives a restart. */
@@ -384,9 +499,10 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     images: options?.images,
     inputs,
     store,
-    ocr: options?.ocr === true ? { enabled: true, engine: options.ocrEngine, python: options.ocrPython, maxPages: options.ocrMaxPages } : null,
+    ocr: ocrOptionsOf(options),
     warnings,
     push,
+    signal,
   })
   let docs = prepared.docs
   job.files = prepared.files
@@ -750,6 +866,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
       warnings,
       quality,
       images: job.images || null,
+      ocr: job.ocr || null,
       coverage: job.coverage || null,
       domain: job.domain,
       offline: !useModel || chapters.every((c) => c.summary?.offline),
@@ -850,7 +967,7 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
     store,
     // replay exactly the OCR the first run used: the cache makes it instant, and
     // without it the chapter text (and therefore the numbering) would differ
-    ocr: previous.ocr ? { enabled: true, engine: previous.ocr.engine, maxPages: previous.ocr.maxPages } : null,
+    ocr: replayOcrOptions(previous.ocr, options),
     warnings,
     push,
   })
