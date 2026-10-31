@@ -977,7 +977,8 @@ check('复习资料：解析模型 JSON、校验页码、容忍截断', () => {
 })
 
 check('复习资料：报告结构（复习框架、K/E/Q、先题后答、来源标签）', () => {
-  const review = sampleReview()
+  // parse, not the raw fixture: page numbers and sourceOk come from parseReview
+  const review = parseReview(JSON.stringify(sampleReview()), { chapter: { index: 1 }, pages: [2, 3] })
   const stats = reviewStats(review)
   const chapters = [
     {
@@ -1013,8 +1014,8 @@ check('复习资料：报告结构（复习框架、K/E/Q、先题后答、来�
     assert(md.includes(needle), `缺少复习框架小节：${needle}`)
   }
   assert(md.includes('## 二、分章复习资料'), '缺少分章复习资料')
-  assert(md.includes('**K1.1 需求定律**〔原文〕（第 2 页）'), '知识点行格式不对')
-  assert(md.includes('#### E1.1 猪肉涨价后的购买量（第 3 页）'), '实例行格式不对')
+  assert(md.includes('**K1.1 需求定律**〔原文〕（供给与需求—第 2 页）'), '知识点行缺少「文件名—第 X 页」来源')
+  assert(md.includes('#### E1.1 猪肉涨价后的购买量（供给与需求—第 3 页）'), '实例行缺少「文件名—第 X 页」来源')
   assert(md.includes('#### 自测题') && md.includes('#### 参考答案'), '缺少自测题/答案小节')
   const qAt = md.indexOf('**Q1.1**')
   const answerAt = md.indexOf('#### 参考答案')

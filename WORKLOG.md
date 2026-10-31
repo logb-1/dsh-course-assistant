@@ -19,6 +19,11 @@
 - 坑：用 `Get-Content -Raw` + `Set-Content` 改 JS 里带反引号的模板字符串会被 PowerShell 吃掉，改文件只用
   `edit`/`write` 工具（和 HANDOFF 第 5 条同一类坑，这次又踩了一次 README 才想起来）。
 - 未验证：真实模型下的复习资料质量（宿主里跑的仍是 1.12.0/1.11.1 代码，需重载插件后才能点勾选跑一次）。
+- 1.13.1：补上「文件名—第 X 页」的来源格式（1.13.0 只写了页码），报告测试改成用 `parseReview` 的产物，
+  这样页码与 `sourceOk` 的渲染路径才真被覆盖。
+- 发布：npm **1.13.0 / 1.13.1** 均已发布（registry 可达）。**GitHub 推送失败**：
+  `github.com:443` 再次不通（`api.github.com` 正常），本地 `main` 领先远端 1 个提交 + tag `v1.13.0`，
+  网络恢复后 `git push origin main --tags` 即可。
 
 ## 2026-10-31 · 1.12.0 页级 OCR 分诊 + 三个静默 bug
 

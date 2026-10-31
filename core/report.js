@@ -39,19 +39,20 @@ function toc(chapters) {
 
 const oneLine = (s, max = 400) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, max)
 
-/** "第 12 页" / "（页码待确认）" / '' — never invent a page. */
-function sourceOf(block) {
+/** "文件名—第 12 页" / "（页码待确认）" / '' — never invent a page. */
+function sourceOf(block, fileLabel = '') {
   if (!block?.source && !block?.page) return ''
-  const label = block.page ? `第 ${block.page} 页` : oneLine(block.source, 40)
+  const page = block.page ? `第 ${block.page} 页` : ''
+  const label = block.page ? (fileLabel ? `${fileLabel}—${page}` : page) : oneLine(block.source, 40)
   if (!label) return ''
   return block.sourceOk === false ? `${label}（不在本章范围，待确认）` : label
 }
 
 const tagOf = (point) => (point.tag ? `〔${point.tag}〕` : '')
 
-function reviewPoint(point) {
+function reviewPoint(point, fileLabel = '') {
   const lines = []
-  const src = sourceOf(point)
+  const src = sourceOf(point, fileLabel)
   lines.push(
     `- **${point.id} ${point.name}**${point.tag ? `〔${point.tag}〕` : ''}${src ? `（${src}）` : ''}`,
   )
@@ -68,8 +69,9 @@ function reviewPoint(point) {
   return lines.join('\n')
 }
 
-function reviewExample(example) {
-  const lines = [`#### ${example.id} ${example.name}${sourceOf(example) ? `（${sourceOf(example)}）` : ''}`]
+function reviewExample(example, fileLabel = '') {
+  const src = sourceOf(example, fileLabel)
+  const lines = [`#### ${example.id} ${example.name}${src ? `（${src}）` : ''}`]
   if (example.points?.length) lines.push(`- 对应知识点：${example.points.join('、')}`)
   const field = (label, value) => {
     if (value) lines.push(`- ${label}：${oneLine(value, 1200)}`)
@@ -111,7 +113,7 @@ function reviewExercises(chapter) {
   return lines
 }
 
-function reviewChapterSection(c) {
+function reviewChapterSection(c, fileLabel = '') {
   const review = c.summary?.review
   const chapterIndex = c.index
   if (!review) {
@@ -145,7 +147,7 @@ function reviewChapterSection(c) {
     lines.push(`##### ${module.name}`)
     lines.push('')
     for (const point of module.points) {
-      lines.push(reviewPoint(point))
+      lines.push(reviewPoint(point, fileLabel))
       lines.push('')
     }
   }
@@ -156,7 +158,7 @@ function reviewChapterSection(c) {
     lines.push('课件未提供实例。')
   } else {
     for (const example of review.examples) {
-      lines.push(reviewExample(example))
+      lines.push(reviewExample(example, fileLabel))
       lines.push('')
     }
   }
@@ -395,6 +397,10 @@ export function buildReport(input) {
     review = null,
   } = input
   const isReview = style === 'review'
+  // the request asks for "文件名—第 X 页"; a page number only means something when
+  // there is exactly one file, otherwise the report says nothing about pages
+  const reviewFileLabel =
+    isReview && files.length === 1 ? String(files[0].name || '').replace(/\.[^.]+$/, '').slice(0, 40) : ''
   const out = []
   const rawTitle = String(courseTitle || '课程').trim().replace(/[_]+/g, ' ').replace(/\s+/g, ' ')
   const bareTitle = /^《[^》]*》$/.test(rawTitle) ? rawTitle.slice(1, -1) : rawTitle
@@ -445,7 +451,7 @@ export function buildReport(input) {
     out.push('## 二、分章复习资料')
     out.push('')
     for (const c of chapters) {
-      out.push(reviewChapterSection(c))
+      out.push(reviewChapterSection(c, reviewFileLabel))
       out.push('')
     }
   } else {
