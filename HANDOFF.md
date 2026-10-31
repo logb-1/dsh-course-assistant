@@ -811,7 +811,7 @@ node tools/img-e2e.mjs "C:\path\deck.pptx"                    # 图片 OCR 链�
 |---|---|
 | 本地版本 | **1.13.1** |
 | npm | **1.13.0 / 1.13.1 均已发布**（`latest` 稍后自动跟上） |
-| GitHub | **推送积压**：`github.com:443` 不通（`api.github.com` 正常），本地 `main` 领先远端 1 个提交 + tag `v1.13.0`；恢复后 `git push origin main --tags` |
+| GitHub | `main` = `b26565f`，tag `v1.13.0` / `v1.13.1` 已推（首次 push 报 443 不通，隔几分钟重试即过） |
 | 测试 | `--unit` **47 项**、`--real` 11 项、`e2e-fake` 1 项、client 契约，全绿 |
 | 默认行为 | 不变（`reportStyle: 'brief'`）；勾选面板「复习资料版」或配置 `reportStyle: 'review'` 才走新模式 |
 | 宿主中的插件 | 仍是旧版本，需重载后新勾选才会出现 |
