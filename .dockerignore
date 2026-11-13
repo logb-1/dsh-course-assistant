@@ -1,0 +1,10 @@
+node_modules
+data
+server/.venv
+server/.env
+samples
+test-results
+docs
+*.md
+.git
+.github

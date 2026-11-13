@@ -1024,7 +1024,91 @@ node tools/img-e2e.mjs "C:\path\deck.pptx"                    # 图片 OCR 链�
 
 ### 发布
 
-- GitHub：`main` = 99dd866、`tag v1.15.1`，CI **success**。
+- GitHub：`main` = 532d097（amend 后 force-push）、`tag v1.15.1`，CI **success**。
 - npm：**暂未发布**。`npm whoami` 返回 401，`~/.npmrc` 的 token 已过期，`npm publish` 报
   `E404 / E401 Unauthorized`。代码与 GitHub 已是最新；重新 `npm login` 后补发 1.15.1 即可。
 - 无 API / 报告结构变化，`schemaVersion` 不变；索引文件是本地产物，不用迁移。
+
+## 三十一、2026-11-13 · 1.16.0 网页版（FastAPI + 账号 + 公网部署）
+
+### 状态
+
+| 项 | 值 |
+|---|---|
+| 版本 | **1.16.0** |
+| 新增 | `core/llm-http.js`、`bin/run-job.mjs`、`server/`（FastAPI）、`Dockerfile`、`render.yaml`、`tools/stub-llm.mjs`、`tools/smoke-server.mjs` |
+| 测试 | Python **9 项**；JS `--unit` **55 项**；`--real` 8 通过 / 5 skip（缺 pptx/docx/md 夹具）；`e2e-fake`、client 契约 |
+| 验证 | 本地 uvicorn + 替身模型跑通 Normal（PDF 1.6 MB → 报告 5.0 KB）与 MAX（pptx 1.5 MB → 8.8 KB） |
+| 部署 | 代码推到 GitHub；Render service **还没建**（要账号/API key） |
+| npm | 仍未发布（1.15.1 起 token 过期） |
+
+### 架构：为什么是子进程
+
+FastAPI 不重写流水线，只做外壳：账号、上传、配额、任务状态、报告存储。真正干活的还是
+`core/pipeline.js`，由 `bin/run-job.mjs` 以子进程方式启动，两边用 **JSON Lines** 通信：
+
+```
+browser ── /api/* ── FastAPI ── JobRunner(asyncio.Queue, 1 并发)
+                        │            └─ node bin/run-job.mjs --spec data/jobs/<id>/spec.json
+                        │                 └─ runPipeline → 报告 .md 落盘
+                        └─ SQLAlchemy（SQLite/Postgres）：用户、会话、任务、报告正文
+```
+
+这样插件与网页共用一套解析/分章/总结逻辑，模型调用也不需要 DSH Host：`core/llm-http.js` 用
+OpenAI 兼容的 `/chat/completions` 实现同样的 `{provider, model, stream}` 接口。
+
+### 文件地图
+
+| 文件 | 要点 |
+|---|---|
+| `core/llm-http.js` | `createHttpLlm`、`flattenContent`、`parseSseChunk`、`friendlyError`；默认 DeepSeek；401/402/429 文案 |
+| `bin/run-job.mjs` | `--spec`、`--quiet`；spec `{id,dataDir,inputs,options,offline,llm}`；退出码 0/2/3 |
+| `server/app/config.py` | `Settings`（env 覆盖）；`REPO_ROOT = parents[2]`；`data_path/uploads_path/reports_path` |
+| `server/app/db.py` | `Database`；sqlite 自动建父目录；`create_all` 不引 Alembic |
+| `server/app/models.py` | `User` / `AuthSession(token_hash PK)` / `Job(status,phase,progress,report_md…)` |
+| `server/app/security.py` | scrypt N=2^14 r=8 p=1；会话 token 只存 sha256；`job_id = token_hex(6)` |
+| `server/app/deps.py` | `get_db`、`get_current_user`（14 天滑动续期） |
+| `server/app/worker.py` | `recover_interrupted`；`JobRunner`；总超时按 deadline 算；进度 0.4 s 节流 |
+| `server/app/routers/auth.py` | 注册 409/422/403、登录 10 分钟 8 次限流、`me` 带 quota |
+| `server/app/routers/jobs.py` | 3 文件 / 40 MB / 每日 3 份；扩展名 + magic；`noReuse:true`；`ocrMode:off` |
+| `server/app/static/` | 原生 JS 单页：登录/注册、拖拽上传、任务列表、报告渲染、删除 |
+| `Dockerfile` | node:22 装依赖 → python:3.12-slim 拷 node 二进制 + `core/` + `bin/` + `server/` |
+| `render.yaml` | docker / free / singapore / `healthCheckPath: /healthz` |
+
+### API
+
+`POST /api/auth/register|login|logout`、`GET /api/auth/me`；
+`POST /api/jobs`（multipart：`files`、`report_level`、`with_videos`）、`GET /api/jobs`、`GET|DELETE /api/jobs/{id}`、
+`GET /api/jobs/{id}/report`（md）、`GET /api/jobs/{id}/report.html`、`GET /healthz`。
+
+### 配置（env，前缀同名大写）
+
+`DATABASE_URL`、`DATA_DIR`、`LLM_BASE_URL`、`LLM_MODEL`、`LLM_PROVIDER`、`LLM_API_KEY`、
+`SIGNUP_CODE`、`SECURE_COOKIES`、`SESSION_DAYS`、`JOBS_PER_DAY`、`MAX_FILES`、`MAX_UPLOAD_MB`、
+`JOB_TIMEOUT_SECONDS`、`WORKER_CONCURRENCY`、`NODE_BIN`、`RUNNER_PATH`。
+
+### 部署（Render Free）
+
+1. push GitHub → Render **New → Blueprint** → 选仓库（读 `render.yaml`）。
+2. Neon 建免费 Postgres，连接串填 `DATABASE_URL`（必须 `postgresql+psycopg://`）。
+3. Environment 填 `LLM_API_KEY`、`SIGNUP_CODE`（可选）。
+4. 构建 3-5 分钟；冒烟 `node tools/smoke-server.mjs https://<app>.onrender.com 课件.pdf`。
+
+免费档：15 分钟休眠（冷启动 20-40 s）、512 MB / 0.1 CPU、磁盘临时（重启丢上传件、跑着的任务会被
+`recover_interrupted` 标成「服务重启，任务已中断」）、Neon 也会休眠。
+
+### 踩坑
+
+- `pip install` 直连 PyPI 解析 12 分钟不走（CPU 681 s），换清华镜像 + 去掉 `uvicorn[standard]` 后 2 分钟完成。
+- SQLite 父目录不存在 → `unable to open database file`；`Database` 现在建目录。
+- `Job.size` 初始 `None`，`+=` 抛 `TypeError`；改 `(job.size or 0) + size`。
+- `conftest` 里固定参数与 `**overrides` 撞键 → `TypeError: got multiple values`；改成 dict 合并。
+- starlette 1.10 + httpx 0.28 会给 `TestClient` 一条 deprecation warning（不影响）。
+
+### 限制 / 下一步
+
+- 线上没有 OCR（Linux 无 WinRT / RapidOCR 未装）；扫描件会按「文字少」如实报告。
+- 单实例内存队列；多实例部署要换队列（Redis/Celery）或粘性路由。
+- 没有邮箱验证 / 找回密码；邀请码是唯一的准入门槛。
+- 待办：建 Render 服务、配 Neon、真实模型冒烟；npm 补发 1.15.1 + 1.16.0。
+

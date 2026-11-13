@@ -6,6 +6,7 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 - **完整页面**：左侧栏「课程助手」图标（`main` 槽位，key `course-assistant`）
 - **常驻入口**：输入框下方 dock 的一行「🎓 课程助手 · 打开面板 →」（`conversation.composer.dock`）
 - **给 Agent 的 Tool**：`course_assistant`（`analyze` / `status` / `library`）
+- **网页版**：`server/` 是同一套流水线的 FastAPI 外壳，带账号、上传、配额，可部署到公网（见 1.16.0 一节）
 
 ![课程助手面板](https://raw.githubusercontent.com/logb-1/dsh-course-assistant/main/docs/panel.png)
 
@@ -35,6 +36,40 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 
 附录不会为空：检索被风控或没有相关结果时，该行退化为
 `https://search.bilibili.com/all?keyword=<URL编码关键词>` 搜索入口。
+
+## 1.16.0 新增：网页版（FastAPI + 账号 + 公网部署）
+
+同一套流水线现在多了一个「不用装 DSH 也能用」的外壳：浏览器上传课件 → FastAPI 排队 →
+子进程跑 `bin/run-job.mjs` → 报告存库、在线看、下载 `.md`。
+
+```
+浏览器 ── FastAPI（账号 / 上传 / 任务 / 配额） ── Python 子进程
+                                                    └─ node bin/run-job.mjs --spec job.json
+                                                         └─ core/llm-http.js ── OpenAI 兼容 /chat/completions
+                                                         └─ core/pipeline.js（插件里同一条流水线）
+```
+
+- 账号：邮箱 + 密码（scrypt），HttpOnly Cookie 会话，可在库里撤销；`SIGNUP_CODE` 非空时注册要邀请码
+- 数据：SQLite 本地 / Postgres 线上（Neon 免费档）；任务状态和报告正文都在库里，磁盘只放上传件
+- 限额：3 个文件、合计 40 MB、每人每天 3 份；登录失败 10 分钟 8 次限流
+- 部署：仓库根目录的 `Dockerfile` + `render.yaml`，Render Free 一键起（详见 [`server/README.md`](server/README.md)）
+- 线上不启用 OCR（Linux 镜像里没有 Windows OCR / RapidOCR），扫描件会按「文字少」如实报出来
+
+本地跑起来（需要 Node 22 + Python 3.12）：
+
+```bash
+python -m venv server/.venv
+server/.venv/Scripts/pip install -r server/requirements-dev.txt   # Linux/macOS 用 bin/pip
+cp server/.env.example server/.env        # 填 LLM_API_KEY
+server/.venv/Scripts/python -m uvicorn app.main:app --app-dir server --port 8099
+
+# 另一个终端：不花钱的替身模型 + 端到端冒烟
+node tools/stub-llm.mjs
+LLM_BASE_URL=http://127.0.0.1:8787/v1 LLM_API_KEY=stub \
+  node tools/smoke-server.mjs http://127.0.0.1:8099 课件.pdf
+```
+
+Python 侧测试：`server/.venv/Scripts/python -m pytest server/tests -q`（9 项，用假 runner，不碰模型、不碰 Node）。
 
 ## 1.15.1 修复：任务列表不再把索引文件当任务
 

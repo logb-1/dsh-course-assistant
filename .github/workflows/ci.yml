@@ -10,6 +10,19 @@ on:
   workflow_dispatch:
 
 jobs:
+  server:
+    # FastAPI shell: tests use tests/fake_runner.py, so no Node and no model key
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install server dependencies
+        run: pip install -r server/requirements-dev.txt
+      - name: API tests
+        run: python -m pytest server/tests -q
+
   unit:
     strategy:
       fail-fast: false

@@ -15,3 +15,12 @@ playwright-report/
 # nightly runner token (never committed)
 .nightly-token
 *.tgz
+# web product: local runs, virtualenv, secrets, python caches
+server-run/
+server/.venv/
+server/.env
+__pycache__/
+.pytest_cache/
+*.pyc
+
+pytest-of-*/

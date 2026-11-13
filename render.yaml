@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: course-assistant
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: LLM_BASE_URL
+        value: https://api.deepseek.com/v1
+      - key: LLM_MODEL
+        value: deepseek-chat
+      - key: LLM_API_KEY
+        sync: false
+      - key: SIGNUP_CODE
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SECURE_COOKIES
+        value: "true"
+      - key: JOBS_PER_DAY
+        value: "3"
+      - key: MAX_UPLOAD_MB
+        value: "40"
+      - key: MAX_FILES
+        value: "3"
+      - key: SESSION_DAYS
+        value: "14"

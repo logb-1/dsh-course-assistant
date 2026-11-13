@@ -2,6 +2,24 @@
 
 按时间倒序。每条只记：改了什么、证据/数字、踩了什么坑。
 
+## 2026-11-13 · 1.16.0 网页版：FastAPI + 账号 + Render 部署
+
+- 新增 `core/llm-http.js`：把 Host 的 `llm.stream()` 接口实现成 OpenAI 兼容 SSE 客户端（DeepSeek 默认）；
+  401/402/429 给出可行动的提示；`AbortSignal.timeout` + `any` 支持中断。
+- 新增 `bin/run-job.mjs`：无头入口，`--spec job.json`，stdout JSONL（progress/done/error），退出码 0/2/3；
+  实测 L10 课件 offline 跑完 6 章、258 ms。
+- 新增 `server/`：FastAPI 应用（配置/DB/模型/scrypt 会话/任务 worker/两个 router/单页前端）、
+  `Dockerfile`、`render.yaml`、`.dockerignore`、`server/.env.example`、`server/README.md`。
+- 新增 `tools/stub-llm.mjs`（替身模型）与 `tools/smoke-server.mjs`（注册→上传→轮询→取报告），
+  本地不花 token 跑通 Normal 与 MAX 两条链路（PDF 1.6 MB，报告 5.0 KB；pptx 1.5 MB，MAX 报告 8.8 KB）。
+- 测试：Python **9 项**（注册/校验/登录登出/邀请码/任务全流程/用户隔离/每日配额/坏文件/无 key），
+  用 `tests/fake_runner.py` 冒充 Node，跑 5.5 秒；`--unit` 升到 **55 项**（新增 SSE 拼字、401 文案），e2e-fake、client 契约仍绿。
+- 踩坑：① pip 直接连 PyPI 解析 12 分钟不走（CPU 681 s），换清华镜像 + 去掉 `uvicorn[standard]` 后 2 分钟装完；
+  ② SQLite 路径父目录不存在时报 `unable to open database file`，`Database` 现在自动建目录；
+  ③ `job.size` 初始为 None，`+=` 抛 TypeError，改成 `(job.size or 0) + size`。
+- 部署：代码推到 GitHub；Render 用 `render.yaml` Blueprint（Docker / free / singapore / `/healthz`），
+  `DATABASE_URL` 指向 Neon，`LLM_API_KEY`、`SIGNUP_CODE` 在面板里填。npm 仍未发布（token 过期，1.15.1 起欠着）。
+
 ## 2026-11-13 · 1.15.1 日常维护：任务列表过滤索引文件
 
 - 修 `core/store.js` `listJobs()`：原来只按 `.endsWith('.json')` 过滤，`jobs/index.json`（去重索引）

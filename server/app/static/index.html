@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>课程助手 · 课件到复习资料</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">课</span>
+      <div>
+        <h1>课程助手</h1>
+        <p>把课件变成能复习的报告</p>
+      </div>
+    </div>
+    <div class="who" id="who" hidden>
+      <span id="quota" class="quota"></span>
+      <span id="who-email" class="email"></span>
+      <button id="logout" class="ghost" type="button">退出</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="auth" class="card auth" hidden>
+      <div class="tabs" role="tablist">
+        <button id="tab-login" class="tab active" type="button" role="tab">登录</button>
+        <button id="tab-register" class="tab" type="button" role="tab">注册</button>
+      </div>
+      <form id="auth-form" autocomplete="on">
+        <label>邮箱
+          <input id="email" name="email" type="email" required autocomplete="username" placeholder="you@example.com" />
+        </label>
+        <label>密码
+          <input id="password" name="password" type="password" required minlength="8" autocomplete="current-password" placeholder="至少 8 位" />
+        </label>
+        <label id="code-row" hidden>邀请码
+          <input id="code" name="code" type="text" placeholder="没有邀请码就先问问管理员" />
+        </label>
+        <p class="hint" id="auth-hint">读 PPT / PDF 时电脑不在身边？上传到这里，服务器替你跑。</p>
+        <button id="auth-submit" class="primary" type="submit">登录</button>
+        <p class="msg" id="auth-msg" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="app" class="layout" hidden>
+      <div class="col">
+        <form id="upload" class="card">
+          <h2>新建报告</h2>
+          <label class="drop" id="drop">
+            <input id="files" type="file" multiple accept=".pdf,.pptx,.docx,.md,.txt" hidden />
+            <strong>选择课件</strong>
+            <span>PDF / PPTX / DOCX / MD / TXT，最多 3 个、合计 40 MB</span>
+            <span class="picked" id="picked">还没有选文件</span>
+          </label>
+          <div class="row">
+            <label class="inline">报告模式
+              <select id="level">
+                <option value="normal">Normal · 要点式，快</option>
+                <option value="max">MAX · 复习资料，慢但全</option>
+              </select>
+            </label>
+            <label class="check"><input id="videos" type="checkbox" checked /> 附带 B 站网课推荐</label>
+          </div>
+          <button id="submit" class="primary" type="submit">开始生成</button>
+          <p class="msg" id="upload-msg" role="alert"></p>
+        </form>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>我的报告</h2>
+            <button id="refresh" class="ghost" type="button">刷新</button>
+          </div>
+          <ul id="jobs" class="jobs"></ul>
+          <p class="empty" id="jobs-empty">还没有报告，先传一份课件。</p>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="card report-card" id="report-card">
+          <div class="card-head">
+            <div>
+              <h2 id="report-title">报告</h2>
+              <p class="meta" id="report-meta">从左边选一份报告查看。</p>
+            </div>
+            <div class="actions">
+              <a id="download" class="ghost" href="#" download hidden>下载 .md</a>
+              <button id="delete" class="ghost danger" type="button" hidden>删除</button>
+            </div>
+          </div>
+          <div class="progress" id="progress" hidden>
+            <div class="bar"><span id="bar"></span></div>
+            <p class="meta" id="progress-text"></p>
+          </div>
+          <div id="report-body" class="report"></div>
+          <p class="empty" id="report-empty">报告生成后会显示在这里。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

@@ -50,6 +50,8 @@ import { ocrPdf, ocrPdfDeep, registerOcrEngine } from '../core/ocr.js'
 import { buildTopicProfile } from '../core/topic.js'
 import { buildAnkiCsv, buildCourseJson } from '../index.js'
 import { diffSummary, applyModelTitles, readImageTexts, rerunChapter, runPipeline } from '../core/pipeline.js'
+import { createHttpLlm } from '../core/llm-http.js'
+import { createServer } from 'node:http'
 import { cleanTitle, normalisePageTitles, titleScore } from '../core/titles.js'
 import { parseReview, reviewKeyPoints, reviewStats } from '../core/review.js'
 import { buildReport } from '../core/report.js'
@@ -1523,6 +1525,83 @@ check('扫描版 PDF：只有图片的页不再被丢弃，整份判为扫描件
   const capped = planOcrPages(doc.pages, { mode: 'auto', maxPages: 4 })
   assert(capped.pages.length === 4 && capped.deferred === 2, `上限记账不对：${capped.pages.length}/${capped.deferred}`)
   return '6 页全部保留，按扫描件整份重读'
+})
+
+/* ------------------------------ web worker seam ------------------------------ */
+
+/** Minimal OpenAI-compatible SSE server; `reply` decides status/body per test. */
+function stubLlmServer(reply) {
+  return new Promise((resolve) => {
+    const server = createServer((req, res) => {
+      let body = ''
+      req.on('data', (chunk) => (body += chunk))
+      req.on('end', () => {
+        const parsed = (() => {
+          try {
+            return JSON.parse(body)
+          } catch {
+            return null
+          }
+        })()
+        reply({ req, res, body: parsed })
+      })
+    })
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address()
+      resolve({ url: `http://127.0.0.1:${port}/v1`, close: () => new Promise((done) => server.close(done)) })
+    })
+  })
+}
+
+const sse = (res, text) => {
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+  for (const part of text.split('')) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: part } }] })}\n\n`)
+  res.end('data: [DONE]\n\n')
+}
+
+check('HTTP 模型适配器：SSE 增量拼成完整文本，结束帧是 stop', async () => {
+  const server = await stubLlmServer(({ res }) => sse(res, '你好，世界'))
+  try {
+    const llm = createHttpLlm({ baseUrl: server.url, apiKey: 'test-key', model: 'fake-model' })
+    let text = ''
+    let finish = null
+    for await (const chunk of llm.stream({
+      system: '你是助教',
+      messages: [{ role: 'user', content: [{ type: 'text', text: '写一句话' }] }],
+      maxTokens: 32,
+    })) {
+      if (chunk.type === 'text-delta') text += chunk.text
+      else if (chunk.type === 'finish') finish = chunk.reason
+    }
+    assert(text === '你好，世界', `拼出的文本不对：${text}`)
+    assert(finish?.kind === 'stop', `结束帧不对：${JSON.stringify(finish)}`)
+    return '逐字增量 + stop'
+  } finally {
+    await server.close()
+  }
+})
+
+check('HTTP 模型适配器：401 给出可行动的报错，而不是裸状态码', async () => {
+  const server = await stubLlmServer(({ res }) => {
+    res.writeHead(401, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ error: { message: 'Invalid API key' } }))
+  })
+  try {
+    const llm = createHttpLlm({ baseUrl: server.url, apiKey: 'expired' })
+    let message = ''
+    try {
+      for await (const _ of llm.stream({ system: 'x', messages: [{ role: 'user', content: 'hi' }] })) {
+        // drain
+      }
+    } catch (error) {
+      message = error.message
+    }
+    assert(/401/.test(message), `报错里没有状态码：${message}`)
+    assert(/LLM_API_KEY/.test(message), `报错里没有排查提示：${message}`)
+    return '401 → 指出 key 要换'
+  } finally {
+    await server.close()
+  }
 })
 
 /* --------------------------------- runner --------------------------------- */
