@@ -14,7 +14,7 @@
  * Every assertion encodes a bug we actually hit, so a future change that
  * reintroduces it fails loudly instead of silently degrading a report.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -821,6 +821,25 @@ check('历史记录：写入、去重、最新优先', () => {
     assert(list[1].id === 'b', '较早的条目应排在后面')
     assert(store.listHistory(1).length === 1, 'limit 应生效')
     return `${list.length} 条 / 首条 ${list[0].courseTitle}`
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+check('任务列表：索引文件不算任务', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ca-jobs-'))
+  try {
+    const store = createStore(dir)
+    const jobs = join(dir, 'jobs')
+    mkdirSync(jobs, { recursive: true })
+    writeFileSync(join(jobs, 'ab12cd34.json'), JSON.stringify({ id: 'ab12cd34' }))
+    writeFileSync(join(jobs, 'ef56ab78.json'), JSON.stringify({ id: 'ef56ab78' }))
+    writeFileSync(join(jobs, 'index.json'), JSON.stringify({ key: { id: 'ab12cd34' } }))
+    writeFileSync(join(jobs, 'ab12cd34.index.json'), JSON.stringify({ passages: [] }))
+    const list = store.listJobs()
+    assert(list.length === 2, `应只列出 2 个任务，实际 ${list.length}：${list.map((j) => j.id).join(',')}`)
+    assert(list.every((j) => /^[0-9a-f]{8}$/i.test(j.id)), `任务 id 应为 8 位十六进制：${list.map((j) => j.id).join(',')}`)
+    return `${list.length} 个任务，索引已排除`
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -2,6 +2,21 @@
 
 按时间倒序。每条只记：改了什么、证据/数字、踩了什么坑。
 
+## 2026-11-13 · 1.15.1 日常维护：任务列表过滤索引文件
+
+- 修 `core/store.js` `listJobs()`：原来只按 `.endsWith('.json')` 过滤，`jobs/index.json`（去重索引）
+  与 `<id>.index.json`（每任务文本检索索引）被当成任务，面板「历史任务」出现 `index` /
+  `xxxxxxxx.index` 这种 `unknown` 行，还把真实任务挤出默认 limit 20。改为 `/^[0-9a-f]{8}\.json$/i`。
+- 新增单测「任务列表：索引文件不算任务」→ `--unit` **53 项**。真实数据目录复核：`listJobs(100)` = **82 个任务**、无非法 id。
+- 维护体检：npm latest 1.15.0（49 文件 / 172.4 kB / 522.0 kB unpacked）与本地 pack 一致；GitHub `main=fe577b8`、
+  `ci` 最近 5 次全 success；宿主 health 1.15.0（llm/pdf true，RapidOCR 未装）；
+  数据目录 jobs 114 文件 3.5 MB、reports 99 份 4.0 MB、缓存 238 条 0.17 MB、history 4 条，最早 2026-10-23，**无 90 天可清理项、无孤儿索引**。
+- `--real` 整组 skip 的原因不是回归：桌面课件被整理到 `Desktop\C++课内\` 与 `Downloads\`，
+  夹具候选路径找不到。`CA_FIXTURES=$HOME/Downloads` 后 **8 项通过**（分诊 26/67、67 页含 13 纯图页、切章、目录自检等），
+  余 5 项缺 pptx/docx/md 夹具仍 skip。README 补了夹具解析顺序与用法。
+- 发布：GitHub `main` = 99dd866 + `tag v1.15.1`（CI success）；**npm 未发**——`npm whoami` 返回 401，
+  `~/.npmrc` 里的 token 已过期，`npm publish` 报 E404/E401；代码与 GitHub 已是最新，等重新登录后再补发。
+
 ## 2026-10-31 · 1.15.0 标题与目录整修（§28 落地）
 
 - 新增 `core/titles.js`：清洗（幻灯片前缀/★/投入注解/页码后缀）+ `titleScore` 否决（纯数字、代码、邮箱、标点开头、

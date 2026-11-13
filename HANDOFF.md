@@ -990,3 +990,41 @@ node tools/img-e2e.mjs "C:\path\deck.pptx"                    # 图片 OCR 链�
 1. 重载插件后跑一份真实课件，确认模型标题的实际质量（假模型只能验证"会被采用"）。
 2. 若模型标题仍不理想：给 `applyModelTitles` 加"与章节正文的重合度"校验，或对低分标题再发一次命名调用（P2b）。
 3. P4 的目录页识别仍没做（只做了 PDF 表格行）；真遇到整页目录的课件再补。
+
+## 三十、2026-11-13 · 1.15.1 日常维护（任务列表过滤索引文件）
+
+### 状态
+
+| 项 | 值 |
+|---|---|
+| 本地版本 | **1.15.1** |
+| 测试 | `--unit` **53 项**、`--real` 8 项（5 项缺 pptx/docx/md 夹具）、`e2e-fake` 1 项、client 契约，全绿 |
+| 修复 | `listJobs()` 不再把 `index.json` / `<id>.index.json` 当成任务 |
+| 新增断言 | 「任务列表：索引文件不算任务」（临时目录里造 2 个任务 + 2 个索引文件） |
+
+### 体检结果（本轮）
+
+- 仓库：工作区干净，HEAD `fe577b8`（1.15.0）。
+- npm：`latest` = 1.15.0，49 文件 / 172.4 kB / 522.0 kB unpacked，与本地 `npm pack --dry-run` 一致。
+- GitHub：`main` = `fe577b8`，`pushed_at` 2026-10-31T07:04:55Z；workflow `ci` 最近 5 次（`fe577b8`、`bd3a2c4`、`d2ebbef`、`ac87ad8`、`c85d5c2`）全部 `completed / success`。
+- 宿主：`course_assistant action=health` → 1.15.0，`llm:true`、`pdf:true`，OCR 引擎 `windows:true` / `rapidocr:false`（Python 版未装，属预期）。
+- 数据目录 `~/.dsh/course-assistant`：jobs 82 个任务 + 31 个 `<id>.index.json` + `index.json`（共 114 文件 / 3.5 MB）；reports 99 份 / 4.0 MB；`cache.json` 238 条 / 0.17 MB；`history.json` 4 条；最早文件 2026-10-23。**没有到 90 天的可清理项，也没有孤儿索引。**
+
+### 修的问题
+
+面板「历史任务」会混进 `index` 与 `xxxxxxxx.index` 行，状态 `unknown`，还把真实任务挤出默认 20 条。
+
+- 原因：`core/store.js` 的 `listJobs()` 只按 `.endsWith('.json')` 过滤，而 `jobs/` 里同时有任务本体 `<id>.json`、去重索引 `index.json`、每任务文本索引 `<id>.index.json`。
+- 修法：只认 `/^[0-9a-f]{8}\.json$/i`（`newJobId = randomUUID().slice(0, 8)` 生成的就是 8 位小写十六进制）。
+- 验证：对真实数据目录跑 `listJobs(100)` → **82 个任务，无非法 id**；面板需重载插件后生效。
+
+### `--real` 为什么整组 SKIP
+
+桌面的课件被整理进了 `Desktop\C++课内\` 与 `Downloads\`，而 `tools/regress.mjs` 只按 `CA_FIXTURES` → `tools/fixtures/` → 桌面根目录 / 工作区 找文件，于是 13 项全 `SKIP (缺少课件文件)`。把 `CA_FIXTURES` 指向 `Downloads` 后 **8 项通过**（L10/L12 字层与质量闸门、PDF 图片页 67 页含 13 张纯图页、分诊 26/67、切章、目录自检），剩 5 项因 pptx/docx/md 夹具已不在本机而继续 skip。README 补了夹具解析顺序与用法。
+
+### 发布
+
+- GitHub：`main` = 99dd866、`tag v1.15.1`，CI **success**。
+- npm：**暂未发布**。`npm whoami` 返回 401，`~/.npmrc` 的 token 已过期，`npm publish` 报
+  `E404 / E401 Unauthorized`。代码与 GitHub 已是最新；重新 `npm login` 后补发 1.15.1 即可。
+- 无 API / 报告结构变化，`schemaVersion` 不变；索引文件是本地产物，不用迁移。

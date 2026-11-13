@@ -19,6 +19,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import { join, extname } from 'node:path'
 import { homedir } from 'node:os'
 
+/** 任务本体文件名：8 位十六进制 id + .json（排除 index.json / <id>.index.json）。 */
+const JOB_FILE = /^[0-9a-f]{8}\.json$/i
+
 export function resolveDataDir(configured) {
   if (configured) return configured
   const home = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -365,7 +368,9 @@ export function createStore(dataDir) {
     listJobs(limit = 20) {
       try {
         return readdirSync(jobsDir)
-          .filter((n) => n.endsWith('.json'))
+          // 任务文件是 `<8 位十六进制>.json`；index.json 是去重索引，
+          // `<id>.index.json` 是该任务的文本检索索引，都不是任务本体。
+          .filter((n) => JOB_FILE.test(n))
           .map((n) => {
             const p = join(jobsDir, n)
             return {

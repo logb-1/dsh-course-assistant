@@ -36,6 +36,24 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 附录不会为空：检索被风控或没有相关结果时，该行退化为
 `https://search.bilibili.com/all?keyword=<URL编码关键词>` 搜索入口。
 
+## 1.15.1 修复：任务列表不再把索引文件当任务
+
+面板「历史任务」里混着一批 `index` / `xxxxxxxx.index` 行，状态 `unknown`，还把真实任务挤出了
+默认的 20 条。原因是 `jobs/` 下除了任务本体 `<id>.json`，还有去重索引 `index.json` 和每个任务的
+文本检索索引 `<id>.index.json`，`listJobs()` 只按 `.endsWith('.json')` 过滤，三种文件一视同仁。
+现在只认 `<8 位十六进制>.json`，单测加了一条「索引文件不算任务」。
+
+日常维护同时核了一遍，没有别的漂移：`--unit` **53 项**、`--real` 可跑的 8 项全绿、
+`e2e-fake` 与 client 契约通过。GitHub 已推 1.15.1；npm 这次没发成——`~/.npmrc` 里的
+token 过期（`npm whoami` 401），重新 `npm login` 后补发即可。
+
+`--real` 的课件夹具按 **`CA_FIXTURES` → `tools/fixtures/` → 桌面 / 工作区** 的顺序找；
+桌面文件被整理后整组会 `SKIP (缺少课件文件)`，把环境变量指过去即可：
+
+```bash
+CA_FIXTURES="$HOME/Downloads" node tools/regress.mjs --real
+```
+
 ## 1.15.0 新增：标题与目录整修（诊断 → 修复）
 
 目录偏差不是模型的问题，是分章前的本地结构识别。六个真实课件里五个能复现：
@@ -515,7 +533,7 @@ course-assistant/
 | Host 路由 | `GET /course-assistant/health` → 200 `{llm:true,pdf:true}`；`upload`→`run`→`job`→`report(md)`→`report(pdf)` 全链路通过（`tools/smoke.mjs`） |
 | Client 槽位 | `main` key `course-assistant` active；`sidebar.panellist` id `course-assistant` active；`conversation.composer.dock` id `course-assistant-dock` active |
 | 语法 | `node --check` 全部通过（index.js / client.js / core/*.js） |
-| 回归 | `node tools/regress.mjs` 共 65 项：`--unit` **52 项**（合成 PDF / 扫描件、标题卫生与分章边界、模型标题覆盖规则、可信度/证据、CTM 字号、分章指标、单章重跑、PPTX 节映射、导出结构、OCR 分诊/择优/页号、复习资料解析与报告结构、Normal/MAX 映射）任何机器可跑；`--real` 13 项需要课件；`--strict` 下 unit 缺文件即失败 |
+| 回归 | `node tools/regress.mjs` 共 66 项：`--unit` **53 项**（合成 PDF / 扫描件、标题卫生与分章边界、模型标题覆盖规则、可信度/证据、CTM 字号、分章指标、单章重跑、PPTX 节映射、导出结构、OCR 分诊/择优/页号、复习资料解析与报告结构、Normal/MAX 映射、任务列表过滤）任何机器可跑；`--real` 13 项需要课件（夹具按 `CA_FIXTURES` → `tools/fixtures/` → 桌面/工作区 解析）；`--strict` 下 unit 缺文件即失败 |
 | 真实课件 | `L12`（67 页 PDF）：OCR 分诊只读 26 页，正文 5 502 → 8 214 字；`实验1-高质量编程基础.pptx`：2 张图全读、186 字、2/14 个提示词带上 `[图片]` |
 | CI | `.github/workflows/ci.yml`：Windows + Ubuntu 矩阵跑 `--unit --strict` 与 client 契约测试；package job 校验 tarball 清单（防 `files` 漏文件）与"版本号不许写死" |
 | 分章质量 | `tools/gold/*.json` + `tools/segment-metrics.mjs`（windowdiff / 边界 F1，±1 页容差）；`deck-800`：章 10/11、windowdiff **0.061**、F1 **0.947** |
