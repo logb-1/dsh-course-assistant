@@ -1202,7 +1202,7 @@ MAX 每章 review ─┐
 
 | 项 | 1.18.0 |
 |---|---|
-| 版本 | `package.json` 1.18.0（npm 是否发版待定） |
+| 版本 | `package.json` 1.18.0；npm 已发布（2026-11-18，57 文件 / 1.6 MB packed / 2.9 MB unpacked） |
 | 测试 | `--unit --strict` **61 项**；`--real` 8 项（5 skip）；`pytest` **11 项**；e2e-fake / client 契约通过 |
 | 语法 | `node --check` 全部通过（含 `core/pdfdoc.js`、`core/diagram.js`、`bin/make-pdf.mjs`） |
 | 依赖 | 新增运行依赖 `pdfkit ^0.20.2`（MIT，纯 JS） |
@@ -1264,4 +1264,5 @@ MAX 每章 review ─┐
 
 - 表格列宽是启发式的，极长单元格仍可能挤；代码块用比例字体近似等宽（未带等宽中文字体）。
 - 结构图每章只展示前 3 个要点；章数很多时翻页。
-- 待办：重载插件后真实模型验证 PDF；npm 发 1.18.0（需要 granular token）；Render 部署仍暂缓。
+- 待办：重载插件后真实模型验证 PDF；Render 部署仍暂缓。
+- 已完成：npm 发布 1.18.0（granular token 用临时 `--userconfig`，发完即删；registry 约 3 分钟后可见）。

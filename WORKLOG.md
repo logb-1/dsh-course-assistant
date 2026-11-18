@@ -17,6 +17,8 @@
 - 测试：`--unit` **61 项**（PDF 排版回读、结构图裁剪、make-pdf 命令行），pytest **11 项**
   （PDF 端点 409/404；期间删掉 DELETE 装饰器导致 405，已修）；真机网页 `report.pdf` 200 / 67,698 B / 5 页。
 - 视觉检查：pypdfium2 渲染 PNG 逐页看，修掉正文压结构图、标题孤行、表格链接列挤成 5 行。
+- 发布：GitHub `f1b46c2` / tag `v1.18.0`（CI success）；npm 1.18.0（57 文件 / 1.6 MB packed / 2.9 MB unpacked），
+  新 granular token 走临时 `--userconfig`，发完删除；`PUT 202` 约 3 分钟后 `latest = 1.18.0`。
 
 ## 2026-11-18 · npm 补发 1.15.1 / 1.16.0 / 1.17.0
 
