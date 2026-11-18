@@ -38,6 +38,40 @@ const reply = JSON.stringify({
   keywords: ['测试', '课程助手'],
 })
 
+// MAX / PLUS 的每章复习资料（review JSON）；没有它 PLUS 的五册会是空的
+const reviewReply = JSON.stringify({
+  chapter: '测试章',
+  title: '测试章',
+  overview: '测试概览',
+  modules: [
+    {
+      name: '测试模块',
+      points: [
+        {
+          id: 'K1.1',
+          name: '知识点一',
+          definition: '定义一',
+          plain: '通俗解释一',
+          conditions: '适用条件',
+          mastery: '理解',
+          formula: '',
+          links: '',
+          pitfalls: '易错点一',
+          source: '第 1 页',
+          tag: '整理',
+          quote: '原文摘录',
+        },
+      ],
+    },
+  ],
+  examples: [],
+  exercises: [{ id: 'Q1.1', origin: '补充练习', stem: '题干一', options: [], points: ['K1.1'], type: '简答', difficulty: '中' }],
+  answers: [{ id: 'Q1.1', text: '第一步写出定义；第二步代入条件；第三步得出结论', note: '参考解答，非课件原答案' }],
+  summary: { oneLine: '一句话', logic: [], remember: [], understand: [], tasks: [] },
+})
+
+const frameworkReply = JSON.stringify({ theme: '测试主题', goals: ['理解测试知识点'], summary: '测试总结' })
+
 const server = createServer((req, res) => {
   let body = ''
   req.on('data', (chunk) => {
@@ -54,7 +88,9 @@ const server = createServer((req, res) => {
       'cache-control': 'no-cache',
       connection: 'keep-alive',
     })
-    const pieces = reply.match(/[\s\S]{1,64}/g) || []
+    // 报告档位不同，提示词不同：框架、复习资料、普通要点各回各的 JSON
+    const answer = body.includes('复习框架') ? frameworkReply : body.includes('复习资料') ? reviewReply : reply
+    const pieces = answer.match(/[\s\S]{1,64}/g) || []
     let index = 0
     const timer = setInterval(() => {
       if (index < pieces.length) {

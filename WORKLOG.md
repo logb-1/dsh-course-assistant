@@ -2,6 +2,23 @@
 
 按时间倒序。每条只记：改了什么、证据/数字、踩了什么坑。
 
+## 2026-11-18 · 1.17.0 PLUS 冲刺模式（review-sprint 五册）
+
+- 新增 `core/report-level.js` 第三档：`plus → sprint`，`resolveSprint`（天数 1–60 / 目标 30–100 / 分钟 30–600，默认 14/80/120）。
+- 新增 `core/sprint.js`：`collectSprintData`（review → 平铺 K/Q）、`planSprint`（目标分矩阵、缺口、放弃项、阶段、按天计划、最后一天整卷模拟）、
+  `renderSprintPlan/Main/Answers/Cheatsheet/Drill`、`buildSprintBooks`（五册 + 合并版）。
+- `core/report.js`：`sprint` 分支输出 `## 01`…`## 05`，`demoteHeadings()` 把书内标题降一级；
+  `core/pipeline.js`：`reviewLike` 复用 review 缓存、去重键带 `sprint d<t>t<目标>m<分钟>`、逐册 `writeReportVariant`、单章重跑重建五册；
+  `core/store.js` 新增 `writeReportVariant`；`index.js` / `client.js` / `server`（表单 + plus 校验）全部接上。
+- 修跨入口 bug：HTTP 只传 `reportLevel`，pipeline 原来只认 `reportStyle`，MAX/PLUS 会静默退回 brief；
+  现在统一 `styleOfLevel(options.reportStyle || options.reportLevel)`。1.16.0 的「MAX 冒烟」实际是普通报告。
+- 测试：`--unit` **58 项**（PLUS 五册题号一致、放弃项不进每日包、标题降级、plus e2e），`--real` 8 pass / 5 skip，
+  `e2e-fake`、client 契约、Python **10 项**全绿。
+- 真机：L10 PDF（67 页）替身模型 → 6 章 / 12 K / 6 Q / 合并报告 15.4 KB / 五册落盘；
+  本地 uvicorn + 替身模型 HTTP PLUS → 5 册、报告 6.8 KB（MAX 同时复核 9.8 KB）。
+- 踩坑：PS 5.1 `Set-Content -Encoding utf8` 写 BOM、`Get-Content` 按 ANSI 读无 BOM UTF-8，把 `package.json` 中文描述写乱；
+  已用 git 还原 + 编辑工具重改。以后 UTF-8 文件只走编辑工具或 node。
+
 ## 2026-11-13 · 1.16.0 网页版：FastAPI + 账号 + Render 部署
 
 - 新增 `core/llm-http.js`：把 Host 的 `llm.stream()` 接口实现成 OpenAI 兼容 SSE 客户端（DeepSeek 默认）；

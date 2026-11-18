@@ -26,7 +26,7 @@ import { coverage, parseSyllabus } from './core/coverage.js'
 import { parseFile } from './core/parser.js'
 import { markdownToDocx } from './core/docx.js'
 import { SUPPORTED } from './core/parser.js'
-import { resolveLevel, styleOfLevel } from './core/report-level.js'
+import { resolveLevel, resolveSprint, styleOfLevel } from './core/report-level.js'
 
 const HERE = join(fileURLToPath(new URL('.', import.meta.url)))
 const PKG = (() => {
@@ -55,9 +55,9 @@ export const Config = Schema.object({
   chapterTitles: Schema.union([Schema.const('auto'), Schema.const('rules')])
     .default('auto')
     .description('章标题：auto 允许模型在摘要时顺带给标题（只覆盖启发式章名），rules 只用本地规则'),
-  reportLevel: Schema.union([Schema.const('normal'), Schema.const('max')])
+  reportLevel: Schema.union([Schema.const('normal'), Schema.const('max'), Schema.const('plus')])
     .default('normal')
-    .description('报告能力：normal 要点式学习报告（快、省 token）；max 复习资料（模块/知识点/实例/习题+参考答案，token 约 2-3 倍）'),
+    .description('报告能力：normal 要点式；max 复习资料（模块/知识点/实例/习题）；plus 冲刺五册（在 max 基础上按天数排期，输出计划/主册/答案册/速记/刷题五册）'),
   vision: Schema.string().default('').description('多模态模型（预留，留空关闭）'),
   domain: Schema.string().default('').description('强制课程领域（如 C++），留空自动识别'),
   ocrMaxPages: Schema.natural().min(1).max(400).default(60).description('OCR 重读页数上限（页级分诊选出的页，按文档顺序）'),
@@ -206,9 +206,15 @@ export function apply(ctx, config = {}) {
         engine: pick(raw.imagesEngine),
       },
       coverage: String(pick(raw.coverage) || pick(config.coverage) || 'auto'),
-    chapterTitles: String(pick(raw.chapterTitles) || pick(config.chapterTitles) || 'auto'),
+      chapterTitles: String(pick(raw.chapterTitles) || pick(config.chapterTitles) || 'auto'),
       reportLevel: level,
       reportStyle: styleOfLevel(level),
+      // PLUS 的排期参数只影响 sprint；普通档位忽略它们
+      sprint: resolveSprint({
+        days: pick(raw.days) ?? pick(raw.plusDays),
+        target: pick(raw.target) ?? pick(raw.plusTarget),
+        minutes: pick(raw.minutes) ?? pick(raw.plusMinutes),
+      }),
       vision: pick(raw.vision) || pick(config.vision) || '',
     }
   }
@@ -697,9 +703,12 @@ export function apply(ctx, config = {}) {
           withVideos: { type: 'boolean', description: '是否检索 B 站网课，默认 true' },
           reportLevel: {
             type: 'string',
-            enum: ['normal', 'max'],
-            description: 'normal 要点式学习报告（默认）；max 复习资料（模块/知识点/实例/习题+参考答案）',
+            enum: ['normal', 'max', 'plus'],
+            description: 'normal 要点式（默认）；max 复习资料（模块/知识点/实例/习题）；plus 冲刺五册（需配合 days/target/minutes）',
           },
+          days: { type: 'number', description: 'PLUS：复习天数（1-60，默认 14）' },
+          target: { type: 'number', description: 'PLUS：目标分（30-100，默认 80）' },
+          minutes: { type: 'number', description: 'PLUS：每天分钟（30-600，默认 120）' },
         },
         required: ['action'],
         additionalProperties: false,
@@ -748,8 +757,8 @@ export function apply(ctx, config = {}) {
           if (!inputs?.length) return { ok: false, reason: restoreInputs(args.jobId).error || '原任务的上传文件已过期' }
           const chapterIndex = Number(args.chapterIndex) || 0
           const job = chapterIndex > 0
-            ? await makeRerunJob(previous, inputs, chapterIndex, optionsOf({ withVideos: args.withVideos, reportLevel: args.reportLevel || args.reportStyle }))
-            : await makeJob(inputs, optionsOf({ withVideos: args.withVideos, reportLevel: args.reportLevel || args.reportStyle }))
+            ? await makeRerunJob(previous, inputs, chapterIndex, optionsOf({ withVideos: args.withVideos, reportLevel: args.reportLevel || args.reportStyle, days: args.days, target: args.target, minutes: args.minutes }))
+            : await makeJob(inputs, optionsOf({ withVideos: args.withVideos, reportLevel: args.reportLevel || args.reportStyle, days: args.days, target: args.target, minutes: args.minutes }))
           return { ok: true, jobId: job.id, chapterIndex: chapterIndex || null, status: job.status }
         }
         if (args.action === 'status') {
@@ -826,7 +835,7 @@ export function apply(ctx, config = {}) {
           if (stat.size > MAX_UPLOAD) return { ok: false, reason: `文件过大（>60MB）：${path}` }
           inputs.push({ path, name: basename(path) })
         }
-        const job = await makeJob(inputs, optionsOf({ withVideos: args.withVideos, reportLevel: args.reportLevel || args.reportStyle }))
+        const job = await makeJob(inputs, optionsOf({ withVideos: args.withVideos, reportLevel: args.reportLevel || args.reportStyle, days: args.days, target: args.target, minutes: args.minutes }))
         // wait for completion so the agent gets the result in one call
         const deadline = Date.now() + 150000
         let current = jobs.get(job.id)

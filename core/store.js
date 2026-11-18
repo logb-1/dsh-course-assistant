@@ -395,6 +395,18 @@ export function createStore(dataDir) {
       return path
     },
 
+    /** One sidecar file of a multi-book report (PLUS 的 01…05 册). */
+    writeReportVariant(baseName, suffix, markdown) {
+      const safe = String(baseName || 'report').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80)
+      const label = String(suffix || 'book').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)
+      const stem = `${safe}-${new Date().toISOString().slice(0, 10)}-${label}`
+      let path = join(reportsDir, `${stem}.md`)
+      let n = 1
+      while (existsSync(path)) path = join(reportsDir, `${stem}-${n++}.md`)
+      writeFileSync(path, markdown, 'utf8')
+      return path
+    },
+
     writeDashboard(baseName, html) {
       const safe = String(baseName || 'report').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80)
       const stem = `${safe}-${new Date().toISOString().slice(0, 10)}`

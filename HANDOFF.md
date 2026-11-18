@@ -1112,3 +1112,75 @@ OpenAI 兼容的 `/chat/completions` 实现同样的 `{provider, model, stream}`
 - 没有邮箱验证 / 找回密码；邀请码是唯一的准入门槛。
 - 待办：建 Render 服务、配 Neon、真实模型冒烟；npm 补发 1.15.1 + 1.16.0。
 
+## 三十二、2026-11-18 · 1.17.0 PLUS 冲刺模式（review-sprint 五册）
+
+### 状态
+
+| 项 | 值 |
+|---|---|
+| 版本 | **1.17.0** |
+| 新增 | `core/sprint.js`；`core/report-level.js` 加 `plus → sprint`；`store.writeReportVariant` |
+| 改动 | `core/report.js`、`core/pipeline.js`、`index.js`、`client.js`、`server/`（表单 + 校验）、`tools/regress.mjs`、`tools/stub-llm.mjs`、`tools/smoke-server.mjs` |
+| 测试 | `--unit` **58 项**；`--real` 8 pass / 5 skip；`e2e-fake`、client 契约；Python **10 项** |
+| 真机 | 桌面：L10 PDF（67 页）→ 6 章 / 12 K / 6 Q / 合并报告 15.4 KB / 五册落盘；HTTP：同一 PDF + 替身模型 → 5 册、报告 6.8 KB |
+| npm | 仍未发布（1.15.1 起 token 过期，用户选择先只发 GitHub） |
+| 部署 | Render 仍未建（用户选择暂缓） |
+
+### 设计：为什么 PLUS 不额外调模型
+
+PLUS 复用 MAX 的每章 `review` JSON（模块 / 知识点 / 实例 / 习题 / 答案），只在本地做确定性重排：
+
+```
+MAX 每章 review ─┐
+                 ├─ collectSprintData → planSprint（排期/矩阵/放弃项）→ render ×5 → 五册 + 合并报告
+章目录 / 文件名 ─┘
+```
+
+- 成本 ≈ MAX（每章仍是 8000 字上限、8192 token），PLUS 只多写 5 个文件；
+- 没有 review 的章会跳过，五册为空时报告明确写「缺每章复习资料」而不是硬编；
+- `summaryCacheKey` 把 `review` 与 `sprint` 视为同一种 `reviewLike`，切档不重复调用；
+- 去重键 `s:` 段带 `sprint d<天>t<目标>m<分钟>`，改排期参数不会复用旧任务。
+
+### 五册与估算
+
+| 册 | 内容 |
+|---|---|
+| 01 复习计划 | 科目画像、目标分–掌握度矩阵（60/70/80/90/95）、放弃项、阶段、按天计划（天/阶段/知识点/题号/分钟/等级）、每日学习包；最后一天整卷模拟 |
+| 02 主册 | `## 第 N 章` + `### K 编号`（目标等级/来源/原文/定义/公式/条件/讲解/易错/相邻概念/最小例题/相关题号）+ `## 题目`（只有题干，无答案） |
+| 03 答案册 | `### Q 编号`（题型/题干/答案/原文依据/步骤/评分点/分值/校验状态） |
+| 04 速记手册 | 每点 ≤5 行；最后 3 天涉及的知识点排前面 |
+| 05 刷题宝典 | 按题型分组（识别信号/解法套路/判分方式/题号表） |
+
+- 估算：`baseNeed = 18×K + 12×Q`；`needFor(t) = baseNeed × (t/80)^1.3`；
+  `achieved = 80 × (预算/needFor(t))^(1/1.3)`，封顶 100；报告写「估算，不是承诺」。
+- 缺口：`shortfall > 0` 时按 `f`（被习题引用比例）从低到高放弃，最多 30%，
+  被放弃的点不再进每日包（单测断言）；主册仍保留全文供查阅。
+- 分值：易 4 / 中 5 / 难 8（估算）；评分点从解析步骤拆，不足两步写「待确认」。
+
+### 配置 / 入口
+
+- 插件 Config：`reportLevel: normal | max | plus`（默认 normal）；面板三按钮 + PLUS 三个数字输入
+  （天数 1–60、目标 30–100、每天 30–600，默认 14/80/120）；重跑带参不会被降级。
+- Agent tool：`reportLevel` 加 `plus`，并接受 `days` / `target` / `minutes`。
+- 网页版：`POST /api/jobs` 的 `report_level=plus` + `days`/`target`/`minutes`（缺省 14/80/120，服务端 clamp）。
+- 兼容：`reportStyle` 旧值 `brief` / `review` 仍识别；`styleOfLevel()` 统一归一。
+
+### 踩坑
+
+- **HTTP 只传 `reportLevel`，pipeline 原来只认 `reportStyle`**：网页版 MAX/PLUS 会静默退回 brief
+  （1.16.0 的「MAX 冒烟」其实跑的是普通报告）。现在 pipeline 统一
+  `styleOfLevel(options.reportStyle || options.reportLevel)`，去重键与单章重跑也走同一归一化。
+- 合并报告里五册标题要与 `## 01` 嵌套：`demoteHeadings()` 一次扫描降一级（`##`→`###`，跳过代码围栏），
+  否则书内 `## 按天计划` 与 `## 01 复习计划` 同级。
+- 主册缺「全部题目」→ 补 `## 题目` 区；章名自带「第 N 章」时不重复编号。
+- PowerShell 5.1 的 `Set-Content -Encoding utf8` 会写 BOM，且 `Get-Content` 默认按 ANSI 读无 BOM 的
+  UTF-8，改 `package.json` 时把中文描述写成乱码；已 `git checkout` 还原并用编辑工具重改。
+  教训：改 UTF-8 文件用编辑工具或 node，不要用 PS 5.1 的管道重写。
+- `server/.venv` 的 pytest 会把 `pytest-of-*` 临时目录建在仓库根，`.gitignore` 已加。
+
+### 限制 / 下一步
+
+- 网页版只提供合并 Markdown 下载；独立五册文件在 `DATA_DIR/reports/`（Render 免费档磁盘临时）。
+- 排期是线性估算，不是学习效果承诺；没有真实模型下的 PLUS 质量评估（下一步）。
+- 待办：重载插件后用真实模型跑一次 PLUS；npm 补发 1.15.1 / 1.16.0 / 1.17.0；Render 部署。
+

@@ -48,12 +48,17 @@ LLM_BASE_URL=http://127.0.0.1:8787/v1 LLM_API_KEY=stub \
   node tools/smoke-server.mjs http://127.0.0.1:8099 ~/Downloads/某章.pdf          # Normal
 LLM_BASE_URL=http://127.0.0.1:8787/v1 LLM_API_KEY=stub \
   node tools/smoke-server.mjs http://127.0.0.1:8099 ~/Downloads/某实验.pptx max   # MAX
+LLM_BASE_URL=http://127.0.0.1:8787/v1 LLM_API_KEY=stub \
+  node tools/smoke-server.mjs http://127.0.0.1:8099 ~/Downloads/某章.pdf plus 10 80 120  # PLUS
 ```
+
+PLUS 会额外检查合并报告里 `## 01`…`## 05` 五册齐全。网页版目前把五册合并成一份 Markdown 下载；
+独立五册文件写在 `DATA_DIR/reports/`（Render 免费档磁盘是临时的，重启即失，合并报告存在数据库里不受影响）。
 
 测试：
 
 ```bash
-server/.venv/bin/python -m pytest server/tests -q          # 9 项
+server/.venv/bin/python -m pytest server/tests -q          # 10 项
 ```
 
 `server/tests/fake_runner.py` 冒充 `bin/run-job.mjs`：同样的 `--spec` 参数、同样的 JSONL 事件、写一份假报告，所以 API 测试不依赖 Node、不依赖模型。
@@ -101,7 +106,7 @@ server/.venv/bin/python -m pytest server/tests -q          # 9 项
 | POST | `/api/auth/login` | `{email,password}` → 200 + Cookie（10 分钟 8 次限流） |
 | POST | `/api/auth/logout` | 删会话 |
 | GET | `/api/auth/me` | `{email,quota:{used_today,limit},invite_required}` |
-| POST | `/api/jobs` | multipart：`files`、`report_level=normal|max`、`with_videos` |
+| POST | `/api/jobs` | multipart：`files`、`report_level=normal|max|plus`、`with_videos`；PLUS 另带 `days` / `target` / `minutes` |
 | GET | `/api/jobs?limit=20` | 当前用户的任务列表 |
 | GET | `/api/jobs/{id}` | 状态 / 进度 / 错误 |
 | GET | `/api/jobs/{id}/report` | 报告 Markdown（`text/markdown`） |

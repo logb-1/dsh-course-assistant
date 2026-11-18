@@ -55,7 +55,8 @@ import { createServer } from 'node:http'
 import { cleanTitle, normalisePageTitles, titleScore } from '../core/titles.js'
 import { parseReview, reviewKeyPoints, reviewStats } from '../core/review.js'
 import { buildReport } from '../core/report.js'
-import { describeLevel, levelOfStyle, resolveLevel, styleOfLevel } from '../core/report-level.js'
+import { describeLevel, levelOfStyle, resolveLevel, resolveSprint, styleOfLevel } from '../core/report-level.js'
+import { buildSprintBooks, planSprint } from '../core/sprint.js'
 
 const ARGV = process.argv.slice(2)
 const QUIET = ARGV.includes('--quiet')
@@ -1085,8 +1086,16 @@ check('报告模式：Normal / MAX 与内部报告风格的映射', () => {
   assert(resolveLevel('', 'max') === 'max', 'fallback 没有生效')
   assert(styleOfLevel('max') === 'review' && styleOfLevel('normal') === 'brief', 'level → style 映射不对')
   assert(levelOfStyle('review') === 'max' && levelOfStyle('brief') === 'normal', 'style → level 映射不对')
-  assert(describeLevel('max').startsWith('MAX') && describeLevel('normal').startsWith('Normal'), '模式说明不对')
-  return 'normal↔brief / max↔review'
+  assert(resolveLevel('plus') === 'plus' && resolveLevel('sprint') === 'plus', 'plus / sprint 没有映射到 plus')
+  assert(styleOfLevel('plus') === 'sprint' && levelOfStyle('sprint') === 'plus', 'plus ↔ sprint 映射不对')
+  assert(describeLevel('plus').startsWith('PLUS'), 'PLUS 模式说明不对')
+  const clamped = resolveSprint({ days: 999, target: 1, minutes: 5 })
+  assert(clamped.days === 60 && clamped.target === 30 && clamped.minutes === 30, `排期参数没有夹紧：${JSON.stringify(clamped)}`)
+  const high = resolveSprint({ days: 3, target: 200, minutes: 9999 })
+  assert(high.days === 3 && high.target === 100 && high.minutes === 600, `上界没有夹紧：${JSON.stringify(high)}`)
+  const fallback = resolveSprint({})
+  assert(fallback.days === 14 && fallback.target === 80 && fallback.minutes === 120, `排期默认值不对：${JSON.stringify(fallback)}`)
+  return 'normal↔brief / max↔review / plus↔sprint'
 })
 
 check('复习资料：解析模型 JSON、校验页码、容忍截断', () => {
@@ -1234,6 +1243,141 @@ check('复习资料版：假模型端到端生成 K/E/Q 与参考答案', async 
     assert(md.includes('Q1.1') && md.includes('Q2.1'), '习题编号没有按章生成')
     assert(md.includes('全课程总结'), '复习框架没有写进课程总结')
     return `${job.chapters.length} 章 / K${job.review.points} E${job.review.examples} Q${job.review.exercises}`
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+check('PLUS：五册齐、题号一致、最后一天整卷模拟', () => {
+  const mk = (index) => {
+    const base = sampleReview()
+    const review = {
+      ...base,
+      modules: [{ name: base.modules[0].name, points: [{ ...base.modules[0].points[0], id: `K${index}.1` }] }],
+      exercises: base.exercises.map((q, i) => ({ ...q, id: `Q${index}.${i + 1}`, points: [`K${index}.1`] })),
+      answers: [{ id: `Q${index}.1`, text: '需求量下降（沿曲线向左上移动）', note: '参考解答，非课件原答案' }],
+    }
+    return parseReview(JSON.stringify(review), { chapter: { index }, pages: [2, 3] })
+  }
+  const chapters = [1, 2].map((index) => {
+    const review = mk(index)
+    return { index, title: index === 1 ? '供给与需求' : '弹性', summary: { review, reviewStats: reviewStats(review) } }
+  })
+  const built = buildSprintBooks({
+    courseTitle: '微观经济学',
+    chapters,
+    files: [{ name: '微观经济学.md' }],
+    sprint: { days: 7, target: 80, minutes: 120 },
+  })
+  assert(built.books.length === 5, `五册数量不对：${built.books.length}`)
+  assert(built.books.map((b) => b.no).join(',') === '01,02,03,04,05', '五册编号不对')
+  assert(new Set(built.books.map((b) => b.file)).size === 5, '五册文件名不能重复')
+  const idsOf = (markdown) => new Set(markdown.match(/\bQ\d+\.\d+\b/g) || [])
+  const main = idsOf(built.books[1].markdown)
+  const answers = idsOf(built.books[2].markdown)
+  const drill = idsOf(built.books[4].markdown)
+  assert(main.size >= 4, `主册题号太少：${[...main].join(',')}`)
+  assert([...main].every((id) => answers.has(id)), '答案册与主册题号不一致')
+  assert([...main].every((id) => drill.has(id)), '刷题宝典与主册题号不一致')
+  assert(built.books[0].markdown.includes('| D07 | 模拟日 |'), '最后一天不是整卷模拟')
+  assert(built.books[0].markdown.includes('目标分–掌握度矩阵'), '缺目标分矩阵')
+  assert(built.books[2].markdown.includes('校验状态'), '答案册缺校验状态')
+  assert(built.books[1].markdown.includes('## 题目'), '主册缺「题目」区（只有最小例题）')
+  assert(built.combined.includes('## 05 刷题宝典'), '合并版缺第五册')
+  assert(!/undefined|NaN/.test(built.combined), '合并版出现 undefined/NaN')
+  return `5 册 / ${main.size} 题`
+})
+
+check('PLUS：时间不够时放弃项真的不进每日包', () => {
+  const points = Array.from({ length: 10 }, (_, i) => ({
+    ...sampleReview().modules[0].points[0],
+    id: `K1.${i + 1}`,
+    name: `知识点 ${i + 1}`,
+  }))
+  const review = parseReview(
+    JSON.stringify({ ...sampleReview(), modules: [{ name: '容量', points }], exercises: [], answers: [] }),
+    { chapter: { index: 1 }, pages: [2, 3] },
+  )
+  const plan = planSprint({
+    chapters: [{ index: 1, title: '容量规划', summary: { review, reviewStats: reviewStats(review) } }],
+    days: 2,
+    target: 80,
+    minutes: 30,
+  })
+  assert(plan.abandoned.length > 0, '超预算时没有放弃项')
+  const abandoned = new Set(plan.abandoned.map((item) => item.id))
+  const scheduled = plan.days.flatMap((day) => day.kps.map((point) => point.id))
+  assert(scheduled.every((id) => !abandoned.has(id)), '放弃项仍被排进每日包')
+  assert(plan.days.at(-1).mock, '最后一天不是整卷模拟')
+  return `${plan.abandoned.length} 个放弃 / 排期 ${scheduled.length} 个`
+})
+
+check('PLUS：假模型端到端生成五册文件与合并报告', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ca-sprint-'))
+  try {
+    const store = createStore(dir)
+    const body = [
+      '# 微观经济学',
+      '## 第一章 供给与需求',
+      '需求量随价格上升而下降，供给量随价格上升而增加。均衡价格由两条曲线的交点决定。'.repeat(8),
+      '## 第二章 弹性',
+      '需求价格弹性等于需求量变化百分比除以价格变化百分比。弹性大于一称为富有弹性。'.repeat(8),
+    ].join('\n\n')
+    const file = join(dir, 'course.md')
+    writeFileSync(file, body, 'utf8')
+    const streamOf = (text) =>
+      (async function* () {
+        yield { type: 'text-delta', text }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })()
+    const llm = {
+      provider: 'test',
+      model: 'fake-sprint',
+      stream(options) {
+        const system = options.system || ''
+        const prompt = options.messages?.[0]?.content?.[0]?.text || ''
+        if (system.includes('复习框架')) {
+          return streamOf(JSON.stringify({ theme: '价格与数量', goals: ['理解需求定律', '会算弹性'], summary: '全课程总结' }))
+        }
+        const index = Number((/本章：第 (\d+) 章/.exec(prompt) || [])[1]) || 1
+        const base = sampleReview()
+        return streamOf(
+          JSON.stringify({
+            ...base,
+            modules: [{ name: base.modules[0].name, points: [{ ...base.modules[0].points[0], id: `K${index}.1` }] }],
+            examples: [{ ...base.examples[0], id: `E${index}.1` }],
+            exercises: base.exercises.map((q, i) => ({ ...q, id: `Q${index}.${i + 1}`, points: [`K${index}.1`] })),
+            answers: [{ id: `Q${index}.1`, text: '需求量下降（沿曲线向左上移动）', note: '参考解答，非课件原答案' }],
+          }),
+        )
+      },
+    }
+    const job = await runPipeline({
+      id: 'sprint-e2e',
+      inputs: [{ path: file, name: 'course.md' }],
+      options: {
+        withVideos: false,
+        knowledge: false,
+        concurrency: 1,
+        reportLevel: 'plus',
+        reportStyle: 'sprint',
+        sprint: { days: 5, target: 75, minutes: 90 },
+      },
+      deps: { store, bili: null, llm },
+      emit: () => {},
+    })
+    assert(job.status === 'done', `任务失败：${job.error || job.status}`)
+    assert(job.style === 'sprint' && job.reportLevel === 'plus', `级别/风格不对：${job.style}/${job.reportLevel}`)
+    assert(job.sprint?.books?.length === 5, `五册没有落盘：${JSON.stringify(job.sprint)}`)
+    for (const book of job.sprint.books) {
+      assert(existsSync(book.path), `册文件不存在：${book.path}`)
+      assert(readFileSync(book.path, 'utf8').startsWith('# '), `册文件缺标题：${book.path}`)
+    }
+    const md = readFileSync(job.reportPath, 'utf8')
+    assert(md.includes('## 01 复习计划') && md.includes('## 05 刷题宝典'), '合并报告缺五册小节')
+    assert(md.includes('### 按天计划') && !md.includes('\n## 按天计划'), '五册标题没有降级嵌套')
+    assert(md.includes('整卷模拟') && md.includes('K1.1') && md.includes('Q2.1'), '计划/知识点/题号没有写进报告')
+    return `${job.chapters.length} 章 / ${job.sprint.books.length} 册`
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

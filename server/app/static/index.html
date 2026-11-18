@@ -59,9 +59,15 @@
               <select id="level">
                 <option value="normal">Normal · 要点式，快</option>
                 <option value="max">MAX · 复习资料，慢但全</option>
+                <option value="plus">PLUS · 冲刺五册（计划/主册/答案/速记/刷题）</option>
               </select>
             </label>
             <label class="check"><input id="videos" type="checkbox" checked /> 附带 B 站网课推荐</label>
+          </div>
+          <div class="row" id="plus-row" hidden>
+            <label class="inline">天数 <input id="plus-days" type="number" min="1" max="60" value="14" /></label>
+            <label class="inline">目标分 <input id="plus-target" type="number" min="30" max="100" value="80" /></label>
+            <label class="inline">每天分钟 <input id="plus-minutes" type="number" min="30" max="600" step="10" value="120" /></label>
           </div>
           <button id="submit" class="primary" type="submit">开始生成</button>
           <p class="msg" id="upload-msg" role="alert"></p>

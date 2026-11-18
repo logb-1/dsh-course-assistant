@@ -11,6 +11,25 @@ import { cleanTitle, hasChapterPrefix, stripHeadingNumber, titleScore } from './
 
 const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim()
 
+/**
+ * 五册是独立文档，各自从 `# 书名` 开始；拼进合并报告时要降一级，
+ * 否则 `## 01 复习计划` 与书里的 `## 按天计划` 同级，目录会散掉。
+ * 一次扫描只降一级，跳过代码围栏。
+ */
+function demoteHeadings(markdown) {
+  let fenced = false
+  return String(markdown || '')
+    .split('\n')
+    .map((line) => {
+      if (/^\s*```/.test(line)) {
+        fenced = !fenced
+        return line
+      }
+      return fenced ? line : line.replace(/^(#{2,4}) /, '#$1 ')
+    })
+    .join('\n')
+}
+
 const fmtPlay = (n) => {
   const v = Number(n) || 0
   if (v >= 100000000) return `${(v / 100000000).toFixed(1)} 亿`
@@ -439,8 +458,10 @@ export function buildReport(input) {
     style = 'brief',
     framework = null,
     review = null,
+    sprint = null,
   } = input
   const isReview = style === 'review'
+  const isSprint = style === 'sprint'
   // the request asks for "文件名—第 X 页"; a page number only means something when
   // there is exactly one file, otherwise the report says nothing about pages
   const reviewFileLabel =
@@ -452,8 +473,8 @@ export function buildReport(input) {
   // wrapped again — it produced "《《计算机系统基础》复习大纲》"
   out.push(
     rawTitle.includes('《')
-      ? `# ${rawTitle}${isReview ? '复习资料' : '学习报告'}`
-      : `# 《${bareTitle}》${isReview ? '复习资料' : '学习报告'}`,
+      ? `# ${rawTitle}${isSprint ? '冲刺五册' : isReview ? '复习资料' : '学习报告'}`
+      : `# 《${bareTitle}》${isSprint ? '冲刺五册' : isReview ? '复习资料' : '学习报告'}`,
   )
   out.push('')
   const sourceLine = files.map((f) => `${f.name}（${f.kind}${f.pages ? `，${f.pages} 页` : ''}）`).join('、')
@@ -471,6 +492,9 @@ export function buildReport(input) {
     meta.coverage && meta.coverage.total ? describeCoverage(meta.coverage) : '',
     meta.diagnostics ? describeOutlineDiagnostics(meta.diagnostics) : '',
     isReview && review ? `复习资料：${describeReview(review)}` : '',
+    isSprint && sprint?.stats
+      ? `PLUS 冲刺：${sprint.stats.days} 天 ｜ 目标 ${sprint.stats.target} 分 ｜ 每日 ${sprint.stats.minutes} 分钟 ｜ 知识点 ${sprint.stats.points} ｜ 习题 ${sprint.stats.exercises}`
+      : '',
     meta.offline ? '总结方式：本地兜底（模型不可用）' : '',
   ].filter(Boolean)
   out.push(`> ${bits.join(' ｜ ')}`)
@@ -487,6 +511,32 @@ export function buildReport(input) {
     out.push(`> 学习看板：\`${meta.dashboardPath}\`（用浏览器打开，离线可用）`)
   }
   out.push('')
+
+  if (isSprint) {
+    const books = sprint?.books || []
+    out.push('## 使用说明')
+    out.push('')
+    out.push('本报告按 review-sprint 技能排版：五册可单独打印，`02 主册`、`03 答案册`、`05 刷题宝典` 共用同一套题号；页码、答案与评分点只来自解析结果，查不到写「待确认」，不编造。')
+    if (sprint?.stats) {
+      out.push(
+        `复习天数 ${sprint.stats.days} 天 ｜ 目标分 ${sprint.stats.target} ｜ 每日 ${sprint.stats.minutes} 分钟 ｜ 知识点 ${sprint.stats.points} 个 ｜ 习题 ${sprint.stats.exercises} 道 ｜ 可达预期 ${sprint.stats.reachable}`,
+      )
+      if (sprint.stats.overflow > 0) out.push(`计划任务量超预算 ${sprint.stats.overflow} 分钟：先做题，讲解只看错题。`)
+    }
+    out.push('')
+    if (!books.length) {
+      out.push('> ⚠️ 本次没有生成冲刺五册（缺少每章复习资料）。请用 MAX 或 PLUS 重跑，并检查模型输出是否被截断。')
+      out.push('')
+      return out.join('\n')
+    }
+    for (const book of books) {
+      out.push(`## ${book.no} ${book.name}`)
+      out.push('')
+      out.push(demoteHeadings(String(book.markdown || '').replace(/^# .*\n+/, '')).trimEnd())
+      out.push('')
+    }
+    return out.join('\n')
+  }
 
   if (isReview) {
     out.push('## 一、复习框架')

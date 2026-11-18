@@ -571,7 +571,9 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
     function Panel() {
       const [files, setFiles] = useState([])
       const [withVideos, setWithVideos] = useState(true)
-    const [reportLevel, setReportLevel] = useState('normal')
+      const [reportLevel, setReportLevel] = useState('normal')
+    // PLUS 的排期参数：只有 plus 档位会用到，默认值与 core/report-level.js 一致
+    const [sprint, setSprint] = useState({ days: 14, target: 80, minutes: 120 })
       const [job, setJob] = useState(null)
       const [phase, setPhase] = useState('idle')
       const [error, setError] = useState('')
@@ -711,7 +713,7 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               files: uploaded.map((u) => ({ id: u.id })),
-              options: { withVideos, reportLevel },
+              options: { withVideos, reportLevel, days: sprint.days, target: sprint.target, minutes: sprint.minutes },
             }),
           })
           const data = await res.json()
@@ -744,9 +746,12 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'content-type': 'application/json' },
-            // carry the current level: otherwise "换种方式重跑" would silently
-            // downgrade a MAX job to Normal
-            body: JSON.stringify({ jobId, options: { reportLevel, ...(options || {}) }, chapterIndex }),
+            // carry the current level and cycle so "换种方式重跑" keeps the plan
+            body: JSON.stringify({
+              jobId,
+              options: { reportLevel, days: sprint.days, target: sprint.target, minutes: sprint.minutes, ...(options || {}) },
+              chapterIndex,
+            }),
           })
           const data = await res.json()
           if (!data.ok) throw new Error(data.reason || '重跑失败')
@@ -888,6 +893,7 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
                 [
                   ['normal', 'Normal', 'Normal：要点式学习报告，快且省 token'],
                   ['max', 'MAX', 'MAX：复习资料（模块 / 知识点 / 实例 / 习题 + 参考答案），token 约 2-3 倍'],
+                  ['plus', 'PLUS', 'PLUS：冲刺五册（复习计划 / 主册 / 答案册 / 速记 / 刷题），复用 MAX 的每章结构，不额外调用模型'],
                 ].map(([level, label, tip]) =>
                   h(
                     'button',
@@ -911,7 +917,57 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
               ),
             ),
             error ? h('div', { className: 'ca-err' }, error) : null,
-            reportLevel === 'max'
+            reportLevel === 'plus'
+              ? h(
+                  'div',
+                  { className: 'ca-phase', style: { marginTop: 6, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' } },
+                  'PLUS 冲刺参数',
+                  h(
+                    'label',
+                    null,
+                    '天数 ',
+                    h('input', {
+                      type: 'number',
+                      min: 1,
+                      max: 60,
+                      value: sprint.days,
+                      disabled: busy,
+                      style: { width: 64 },
+                      onChange: (e) => setSprint((s) => ({ ...s, days: Math.max(1, Math.min(60, Number(e.target.value) || 14)) })),
+                    }),
+                  ),
+                  h(
+                    'label',
+                    null,
+                    '目标分 ',
+                    h('input', {
+                      type: 'number',
+                      min: 30,
+                      max: 100,
+                      value: sprint.target,
+                      disabled: busy,
+                      style: { width: 64 },
+                      onChange: (e) => setSprint((s) => ({ ...s, target: Math.max(30, Math.min(100, Number(e.target.value) || 80)) })),
+                    }),
+                  ),
+                  h(
+                    'label',
+                    null,
+                    '每天分钟 ',
+                    h('input', {
+                      type: 'number',
+                      min: 30,
+                      max: 600,
+                      step: 10,
+                      value: sprint.minutes,
+                      disabled: busy,
+                      style: { width: 72 },
+                      onChange: (e) => setSprint((s) => ({ ...s, minutes: Math.max(30, Math.min(600, Number(e.target.value) || 120)) })),
+                    }),
+                  ),
+                  h('span', { style: { opacity: 0.7 } }, '最后一学习日安排整卷模拟；公式与预算都是估算，不是承诺'),
+                )
+              : reportLevel === 'max'
               ? h(
                   'div',
                   { className: 'ca-phase', style: { marginTop: 6 } },

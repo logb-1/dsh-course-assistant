@@ -29,6 +29,8 @@ import { extractKnowledge, fallbackKnowledge } from './knowledge.js'
 import { detectDomain } from './domain.js'
 import { evaluateSummary, describeConfidence, pointText, pointEvidence, normalizeForMatch } from './verify.js'
 import { describeReview, parseReview, reviewStats, REVIEW_PROMPT_VERSION } from './review.js'
+import { buildSprintBooks } from './sprint.js'
+import { styleOfLevel } from './report-level.js'
 import { buildIndex, serializePassages } from './search.js'
 import { buildTopicProfile } from './topic.js'
 import { cleanKeywords } from './terms.js'
@@ -82,7 +84,9 @@ export const JOB_SCHEMA_VERSION = 2
 
 /** Cache identity: prompt version + text + everything else that changes the answer. */
 export function summaryCacheKey(text, { provider, model, domain, style } = {}) {
-  const variant = style === 'review' ? `review${REVIEW_PROMPT_VERSION}` : `brief${CHAPTER_PROMPT_VERSION}`
+  // sprint 复用 review 的每章 JSON，所以缓存必须也共用 review 变体
+  const reviewLike = style === 'review' || style === 'sprint'
+  const variant = reviewLike ? `review${REVIEW_PROMPT_VERSION}` : `brief${CHAPTER_PROMPT_VERSION}`
   const scope = `${provider || '-'}/${model || '-'}/${domain?.id || '-'}/${variant}`
   return `sum:v${CHAPTER_PROMPT_VERSION}:${sha(text)}:${scope}`
 }
@@ -236,7 +240,7 @@ async function summarizeWithRetry(args) {
     const extra = decision.action === 'retry' ? { maxTokens: decision.maxTokens, passageRatio: decision.passageRatio } : {}
     try {
       // one retry policy, two contracts: bullets (brief) or a review document
-      const run = args.style === 'review' ? summarizeChapterReview : summarizeChapter
+      const run = args.style === 'review' || args.style === 'sprint' ? summarizeChapterReview : summarizeChapter
       return await run({ ...args, ...extra })
     } catch (error) {
       last = error
@@ -247,6 +251,11 @@ async function summarizeWithRetry(args) {
 }
 
 /** Stable key for "same files + same settings" — enables a zero-cost rerun. */
+export function sprintKeyOf(options = {}) {
+  const sprint = options?.sprint || {}
+  return `d${Number(sprint.days) || 0}t${Number(sprint.target) || 0}m${Number(sprint.minutes) || 0}`
+}
+
 export function dedupeKeyFor(inputs, options, llm) {
   const files = (inputs || [])
     .map((file) => file?.sha256 || file?.name || '')
@@ -262,8 +271,13 @@ export function dedupeKeyFor(inputs, options, llm) {
     // OCR settings change the text the model sees, so they change the job
     `o:${ocr.mode}${ocr.pick === 'best' ? '+best' : ''}`,
     `i:${options?.images?.mode || 'ocr'}:${Number(options?.images?.max) || 40}`,
-    // the report style changes what the model is asked for
-    `s:${options?.reportStyle === 'review' ? 'review' : 'brief'}`,
+    // the report style changes what the model is asked for; PLUS also changes
+    // the plan itself, so the sprint parameters are part of the identity.
+    // normalize first: HTTP callers send reportLevel, the plugin sends reportStyle
+    `s:${(() => {
+      const style = styleOfLevel(options?.reportStyle || options?.reportLevel)
+      return style === 'sprint' ? `sprint${sprintKeyOf(options)}` : style
+    })()}`,
   ].join('|')
   return createHash('sha256').update(files).update('|').update(scope).digest('hex').slice(0, 16)
 }
@@ -556,9 +570,11 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
   }
   const concurrency = Math.max(1, Math.min(5, Number(options?.concurrency) || 4))
   const warnings = []
-  // 'review' = 复习资料（模块/知识点/实例/习题）；'brief' = 原来的要点式报告
-  const style = options?.reportStyle === 'review' ? 'review' : 'brief'
-  const reportLevel = style === 'review' ? 'max' : 'normal'
+  // 'review' = 复习资料（模块/知识点/实例/习题）；'sprint' = PLUS 冲刺五册；'brief' = 要点式报告
+  // HTTP 调用方只传 reportLevel（normal/max/plus），插件传 reportStyle；两者都归一到 style
+  const style = styleOfLevel(options?.reportStyle || options?.reportLevel)
+  const reviewLike = style === 'review' || style === 'sprint'
+  const reportLevel = style === 'sprint' ? 'plus' : style === 'review' ? 'max' : 'normal'
 
   const job = {
     id,
@@ -569,6 +585,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     progress: 0.02,
     style,
     reportLevel,
+    sprint: null,
     files: [],
     courseTitle: '',
     chapters: [],
@@ -709,7 +726,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
               courseTitle: outline.courseTitle,
               chapter,
               text,
-              pageText: style === 'review' ? pageMarkedText(chapter, docs) : '',
+              pageText: reviewLike ? pageMarkedText(chapter, docs) : '',
               pageRange: docs.length === 1 ? pageRangeLabel(chapter) : '',
               outline: outlineTitles,
               domain,
@@ -937,12 +954,12 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     warnings.push(`要点覆盖偏低：${describeCoverage(coverage)}`)
   }
 
-  push({ phase: 'summary', message: style === 'review' ? '生成复习框架…' : '生成全课程总结…', progress: 0.83 })
+  push({ phase: 'summary', message: reviewLike ? '生成复习框架…' : '生成全课程总结…', progress: 0.83 })
 
   /* ---------------- 4. course summary / review framework ---------------- */
   let courseSummary = ''
   let framework = null
-  if (useModel && style === 'review') {
+  if (useModel && reviewLike) {
     try {
       framework = await summarizeCourseReview({
         llm,
@@ -998,7 +1015,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
 
   // course-wide review totals, so the header can say "34 个知识点 / 9 道习题"
   let review = null
-  if (style === 'review') {
+  if (reviewLike) {
     const totals = { modules: 0, points: 0, examples: 0, exercises: 0, answered: 0, byTag: {} }
     for (const chapter of chapters) {
       const stats = chapter.reviewStats
@@ -1015,6 +1032,28 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     job.framework = framework
   }
 
+  // PLUS：五册是每章 review JSON 的确定性重排，和合并报告一起落盘，一册一个文件
+  let sprint = null
+  let sprintBooks = []
+  if (style === 'sprint') {
+    sprint = buildSprintBooks({
+      courseTitle: outline.courseTitle,
+      chapters,
+      files: job.files,
+      sprint: options?.sprint,
+      domain: job.domain,
+      meta: { generatedAt: new Date().toISOString().slice(0, 16).replace('T', ' ') },
+    })
+    sprintBooks = sprint.books.map((book) => ({
+      key: book.key,
+      no: book.no,
+      name: book.name,
+      path: store.writeReportVariant(outline.courseTitle || 'course', `${book.no}-${book.name}`, book.markdown),
+    }))
+    job.sprint = { ...sprint.stats, books: sprintBooks }
+    if (sprint.warnings.length) warnings.push(...sprint.warnings)
+  }
+
   const markdown = buildReport({
     courseTitle: outline.courseTitle,
     files: job.files,
@@ -1029,6 +1068,7 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     style,
     framework,
     review,
+    sprint,
     meta: {
       model: modelLabel,
       elapsedMs: job.elapsedMs,
@@ -1202,7 +1242,9 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   let summary
   // a rerun must use the same contract as the original job, or chapter 3 would
   // come back as bullets inside a review document
-  const style = previous.style === 'review' || options?.reportStyle === 'review' ? 'review' : 'brief'
+  const requestedStyle = options?.reportStyle || options?.reportLevel || previous.style
+  const style = styleOfLevel(requestedStyle)
+  const reviewLike = style === 'review' || style === 'sprint'
   const cacheKey = summaryCacheKey(target.text, { provider: llm?.provider, model: llm?.model, domain, style })
   if (llm) {
     try {
@@ -1214,7 +1256,7 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
         courseTitle: previous.courseTitle || outline?.courseTitle || '',
         chapter,
         text: target.text,
-        pageText: style === 'review' ? pageMarkedText(chapter, docs) : '',
+        pageText: reviewLike ? pageMarkedText(chapter, docs) : '',
         pageRange: docs.length === 1 ? pageRangeLabel(chapter) : '',
         outline: (previous.chapters || []).map((c) => c.title),
         domain,
@@ -1310,6 +1352,26 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
   }
 
   push({ phase: 'report', message: '重建报告…', progress: 0.85 })
+  // PLUS 重跑：章节变了，五册要跟着重排；参数沿用原任务，除非本次显式给了新参数
+  let sprint = null
+  if (style === 'sprint') {
+    sprint = buildSprintBooks({
+      courseTitle: previous.courseTitle || outline?.courseTitle || '',
+      chapters: job.chapters,
+      files: previous.files || [],
+      sprint: options?.sprint || previous.sprint,
+      domain: job.domain,
+      meta: { generatedAt: new Date().toISOString().slice(0, 16).replace('T', ' ') },
+    })
+    const books = sprint.books.map((book) => ({
+      key: book.key,
+      no: book.no,
+      name: book.name,
+      path: store.writeReportVariant(previous.courseTitle || outline?.courseTitle || 'course', `${book.no}-${book.name}`, book.markdown),
+    }))
+    job.sprint = { ...sprint.stats, books }
+    if (sprint.warnings.length) warnings.push(...sprint.warnings)
+  }
   const markdown = buildReport({
     courseTitle: previous.courseTitle || outline?.courseTitle || '',
     files: previous.files || [],
@@ -1319,6 +1381,8 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
     seriesLinks: previous.seriesLinks || [],
     byChapter: job.byChapter || {},
     fallback: previous.fallback,
+    style,
+    sprint,
     meta: {
       model: llm ? `${llm.provider}/${llm.model}` : '',
       elapsedMs: job.elapsedMs,
@@ -1327,6 +1391,7 @@ export async function rerunChapter({ id, inputs, previous, chapterIndex, options
       domain: job.domain,
       offline: !llm,
       generatedAt: new Date().toISOString().slice(0, 19).replace('T', ' '),
+      style,
     },
   })
   const reportPath = store.writeReport(previous.courseTitle || outline?.courseTitle || 'course', markdown)

@@ -2,17 +2,20 @@
  * End-to-end smoke test against a running web server.
  *
  *   node tools/smoke-server.mjs http://127.0.0.1:8099 path/to/lecture.pdf
+ *   node tools/smoke-server.mjs http://127.0.0.1:8099 path/to/lecture.pdf max
+ *   node tools/smoke-server.mjs http://127.0.0.1:8099 path/to/lecture.pdf plus 10 80 120
  *
  * Registers a throwaway account, uploads the file, waits for the job and
- * checks that the HTML report renders. Prints a one-line verdict.
+ * checks that the HTML report renders (PLUS also checks the five books).
+ * Prints a one-line verdict.
  */
-const [, , baseArg, fileArg, levelArg] = process.argv
+const [, , baseArg, fileArg, levelArg, daysArg, targetArg, minutesArg] = process.argv
 const base = (baseArg || 'http://127.0.0.1:8099').replace(/\/$/, '')
 const file = fileArg
-const level = levelArg === 'max' ? 'max' : 'normal'
+const level = ['normal', 'max', 'plus'].includes(levelArg) ? levelArg : 'normal'
 
 if (!file) {
-  console.error('usage: node tools/smoke-server.mjs <base-url> <file>')
+  console.error('usage: node tools/smoke-server.mjs <base-url> <file> [normal|max|plus] [days] [target] [minutes]')
   process.exit(2)
 }
 
@@ -48,6 +51,11 @@ const form = new FormData()
 form.append('files', new Blob([bytes]), basename(file))
 form.append('report_level', level)
 form.append('with_videos', 'false')
+if (level === 'plus') {
+  form.append('days', daysArg || '14')
+  form.append('target', targetArg || '80')
+  form.append('minutes', minutesArg || '120')
+}
 res = await call('/api/jobs', { method: 'POST', body: form })
 if (!res.ok) throw new Error(`upload ${res.status}: ${await res.text()}`)
 const job = await res.json()
@@ -69,4 +77,11 @@ const html = await call(`/api/jobs/${job.id}/report.html`)
 const body = await html.text()
 if (!html.ok) throw new Error(`report ${html.status}: ${body.slice(0, 200)}`)
 console.log('report html', body.length, 'bytes; contains table:', body.includes('<table>'))
+if (level === 'plus') {
+  const md = await call(`/api/jobs/${job.id}/report`)
+  const text = await md.text()
+  const books = (text.match(/^## 0[1-5] /gm) || []).length
+  if (!md.ok || books !== 5) throw new Error(`plus report books=${books}: ${text.slice(0, 200)}`)
+  console.log('plus report', text.length, 'bytes, books:', books)
+}
 console.log('SMOKE PASS', job.id)

@@ -88,6 +88,16 @@ def test_job_lifecycle(make_client):
     assert client.get(f"/api/jobs/{job_id}").status_code == 404
 
 
+def test_plus_level(make_client):
+    client = make_client()
+    register(client)
+    created = upload(client, report_level="plus", days="9", target="85", minutes="150")
+    assert created.status_code == 201, created.text
+    assert wait_done(client, created.json()["id"])["status"] == "done"
+    bad = upload(client, report_level="ultra")
+    assert bad.status_code == 422
+
+
 def test_job_isolation(make_client):
     client = make_client()
     register(client)

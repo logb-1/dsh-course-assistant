@@ -62,6 +62,9 @@ async def create_job(
     files: list[UploadFile] = File(...),
     report_level: str = Form("normal"),
     with_videos: bool = Form(True),
+    days: int = Form(0),
+    target: int = Form(0),
+    minutes: int = Form(0),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -70,8 +73,17 @@ async def create_job(
         raise HTTPException(status_code=503, detail="服务端还没配置模型 key，暂时不能生成报告")
     if len(files) == 0 or len(files) > settings.max_files:
         raise HTTPException(status_code=422, detail=f"一次最多 {settings.max_files} 个文件")
-    if report_level not in {"normal", "max"}:
-        raise HTTPException(status_code=422, detail="report_level 只能是 normal 或 max")
+    if report_level not in {"normal", "max", "plus"}:
+        raise HTTPException(status_code=422, detail="report_level 只能是 normal、max 或 plus")
+
+    # PLUS 的排期参数缺省时用与插件一致的默认值，并夹到安全区间
+    sprint = None
+    if report_level == "plus":
+        sprint = {
+            "days": max(1, min(60, days or 14)),
+            "target": max(30, min(100, target or 80)),
+            "minutes": max(30, min(600, minutes or 120)),
+        }
 
     since = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     used = db.scalar(select(func.count(Job.id)).where(Job.user_id == user.id, Job.created_at >= since)) or 0
@@ -95,6 +107,7 @@ async def create_job(
             {
                 "reportLevel": report_level,
                 "withVideos": with_videos,
+                **({"sprint": sprint} if sprint else {}),
                 # the Linux image has no OCR engine; scanned PDFs will report low text
                 "ocrMode": "off",
                 "concurrency": 2,

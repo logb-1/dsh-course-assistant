@@ -171,6 +171,11 @@ async function upload(event) {
   for (const file of files) form.append("files", file);
   form.append("report_level", $("level").value);
   form.append("with_videos", $("videos").checked ? "true" : "false");
+  if ($("level").value === "plus") {
+    form.append("days", $("plus-days").value || "14");
+    form.append("target", $("plus-target").value || "80");
+    form.append("minutes", $("plus-minutes").value || "120");
+  }
 
   $("submit").disabled = true;
   setMsg($("upload-msg"), "上传中…");
@@ -253,6 +258,9 @@ function wire() {
   $("auth-form").addEventListener("submit", submitAuth);
   $("logout").addEventListener("click", logout);
   $("upload").addEventListener("submit", upload);
+  $("level").addEventListener("change", () => {
+    $("plus-row").hidden = $("level").value !== "plus";
+  });
   $("refresh").addEventListener("click", () => { loadJobs(); if (state.currentId) openJob(state.currentId); });
   $("delete").addEventListener("click", removeJob);
   $("files").addEventListener("change", () => {

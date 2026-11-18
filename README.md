@@ -15,7 +15,7 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 | 区域 | 内容 |
 |---|---|
 | 拖拽区 | 拖入或点击选择，支持 `.pptx .pdf .docx .md .txt`，一次最多 12 个（单文件 ≤60MB） |
-| 选项 | 「检索 B 站网课」可关闭（关掉后不产生任何站外请求）；「报告模式：Normal / MAX」切换报告能力 |
+| 选项 | 「检索 B 站网课」可关闭（关掉后不产生任何站外请求）；「报告模式：Normal / MAX / PLUS」切换报告能力（PLUS 另填天数 / 目标分 / 每天分钟） |
 | 进度 | 解析 → 识别目录 → 逐章总结（边出边显示）/ 并行检索 → 生成总结 → 报告 |
 | 标签页 | 知识点（每章要点、⭐重点、⚠️难点、关键词）· 目录 · B 站网课 · 报告（渲染 + 下载 MD/PDF/复制） |
 
@@ -36,6 +36,26 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 
 附录不会为空：检索被风控或没有相关结果时，该行退化为
 `https://search.bilibili.com/all?keyword=<URL编码关键词>` 搜索入口。
+
+## 1.17.0 新增：PLUS 冲刺模式（五册：计划 / 主册 / 答案册 / 速记 / 刷题）
+
+按 [`review-sprint`](https://github.com/logb-1/review-sprint) 技能的输出规范，把 MAX 的每章复习资料
+重排成一套可直接打印的冲刺资料。PLUS 复用 MAX 的每章 review JSON，在本地做确定性排期与五册重排，
+**不额外调用模型**（成本 ≈ MAX，多写 5 个文件）。
+
+- 输入：复习天数 1–60（默认 14）、目标分 30–100（默认 80）、每天分钟 30–600（默认 120）；
+  面板选 PLUS 时出现三个输入，Agent tool 用 `days` / `target` / `minutes`，网页版用同名 form 字段。
+- 输出：一份合并报告（`## 01`…`## 05`）+ 五册独立文件
+  `01-复习计划.md`、`02-主册.md`、`03-答案册.md`、`04-速记手册.md`、`05-刷题宝典.md`
+  （落在 `reports/<课程>-<日期>-<编号>-<册名>.md`，可分开打印）。
+- 结构对齐技能：计划含科目画像、目标分–掌握度矩阵（60/70/80/90/95）、放弃项、按天计划与每日学习包，
+  最后一天整卷模拟；主册按 `K` 编号（目标等级/来源/原文/定义/易错/讲解/最小例题/相关题号）+ 全部题目；
+  答案册按 `Q` 编号（答案/原文依据/步骤/评分点/分值/校验状态）；速记每点 ≤5 行、最后 3 天优先；
+  刷题按题型分组（识别信号/解法套路/判分方式）。
+- 诚实边界：排期是透明线性估算，报告明确写「估算，不是承诺」；时间不够先砍低收益知识点并写进放弃项
+  （被砍的不再进每日包）；没有答案/页码写「待确认」，不编造。
+- 兼容：`reportLevel` 新增 `plus`；内部 `reportStyle: 'sprint'` 与旧值 `brief` / `review` 都仍识别；
+  去重键包含 `d<天>t<目标>m<分钟>`，改参数不会误复用旧任务。
 
 ## 1.16.0 新增：网页版（FastAPI + 账号 + 公网部署）
 
@@ -69,7 +89,7 @@ LLM_BASE_URL=http://127.0.0.1:8787/v1 LLM_API_KEY=stub \
   node tools/smoke-server.mjs http://127.0.0.1:8099 课件.pdf
 ```
 
-Python 侧测试：`server/.venv/Scripts/python -m pytest server/tests -q`（9 项，用假 runner，不碰模型、不碰 Node）。
+Python 侧测试：`server/.venv/Scripts/python -m pytest server/tests -q`（10 项，用假 runner，不碰模型、不碰 Node）。
 
 ## 1.15.1 修复：任务列表不再把索引文件当任务
 
@@ -568,7 +588,7 @@ course-assistant/
 | Host 路由 | `GET /course-assistant/health` → 200 `{llm:true,pdf:true}`；`upload`→`run`→`job`→`report(md)`→`report(pdf)` 全链路通过（`tools/smoke.mjs`） |
 | Client 槽位 | `main` key `course-assistant` active；`sidebar.panellist` id `course-assistant` active；`conversation.composer.dock` id `course-assistant-dock` active |
 | 语法 | `node --check` 全部通过（index.js / client.js / core/*.js） |
-| 回归 | `node tools/regress.mjs` 共 66 项：`--unit` **53 项**（合成 PDF / 扫描件、标题卫生与分章边界、模型标题覆盖规则、可信度/证据、CTM 字号、分章指标、单章重跑、PPTX 节映射、导出结构、OCR 分诊/择优/页号、复习资料解析与报告结构、Normal/MAX 映射、任务列表过滤）任何机器可跑；`--real` 13 项需要课件（夹具按 `CA_FIXTURES` → `tools/fixtures/` → 桌面/工作区 解析）；`--strict` 下 unit 缺文件即失败 |
+| 回归 | `node tools/regress.mjs` 共 71 项：`--unit` **58 项**（合成 PDF / 扫描件、标题卫生与分章边界、模型标题覆盖规则、可信度/证据、CTM 字号、分章指标、单章重跑、PPTX 节映射、导出结构、OCR 分诊/择优/页号、复习资料解析与报告结构、Normal/MAX/PLUS 映射、PLUS 五册与放弃项、任务列表过滤）任何机器可跑；`--real` 13 项需要课件（夹具按 `CA_FIXTURES` → `tools/fixtures/` → 桌面/工作区 解析）；`--strict` 下 unit 缺文件即失败 |
 | 真实课件 | `L12`（67 页 PDF）：OCR 分诊只读 26 页，正文 5 502 → 8 214 字；`实验1-高质量编程基础.pptx`：2 张图全读、186 字、2/14 个提示词带上 `[图片]` |
 | CI | `.github/workflows/ci.yml`：Windows + Ubuntu 矩阵跑 `--unit --strict` 与 client 契约测试；package job 校验 tarball 清单（防 `files` 漏文件）与"版本号不许写死" |
 | 分章质量 | `tools/gold/*.json` + `tools/segment-metrics.mjs`（windowdiff / 边界 F1，±1 页容差）；`deck-800`：章 10/11、windowdiff **0.061**、F1 **0.947** |
