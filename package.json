@@ -1,6 +1,6 @@
 {
   "name": "dsh-course-assistant",
-  "version": "1.17.0",
+  "version": "1.18.0",
   "private": false,
   "type": "module",
   "description": "课程文件 → 目录识别 · 分章知识点总结 · B 站网课推荐 · 学习报告（DeepSeek Harness bundle）",
@@ -38,6 +38,8 @@
     "core/*.js",
     "core/ocr.ps1",
     "core/rapidocr.py",
+    "bin/*.mjs",
+    "assets/fonts/*",
     "locale/*.json",
     "icon.svg",
     "README.md",
@@ -61,6 +63,7 @@
     "@playwright/test": "^1.64.1"
   },
   "dependencies": {
+    "pdfkit": "^0.20.2",
     "schemastery": "^3.18.0"
   }
 }

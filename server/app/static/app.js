@@ -210,10 +210,14 @@ async function openJob(id, quiet = false) {
     $("bar").style.width = `${Math.round((job.progress || 0) * 100)}%`;
     $("progress-text").textContent = job.message || "";
     $("download").hidden = job.status !== "done";
+    $("download-pdf").hidden = job.status !== "done";
     $("delete").hidden = job.status === "running";
     if (job.status === "done") {
+      const stem = (job.filename || "report").replace(/\.[^.]+$/, "");
       $("download").href = `/api/jobs/${job.id}/report`;
-      $("download").setAttribute("download", `${(job.filename || "report").replace(/\.[^.]+$/, "")}.md`);
+      $("download").setAttribute("download", `${stem}.md`);
+      $("download-pdf").href = `/api/jobs/${job.id}/report.pdf`;
+      $("download-pdf").setAttribute("download", `${stem}.pdf`);
       const html = await api(`/api/jobs/${job.id}/report.html`);
       $("report-body").innerHTML = html;
       $("report-empty").hidden = true;
@@ -241,6 +245,7 @@ async function removeJob() {
     $("report-title").textContent = "报告";
     $("report-meta").textContent = "从左边选一份报告查看。";
     $("download").hidden = true;
+    $("download-pdf").hidden = true;
     $("delete").hidden = true;
     $("report-empty").hidden = false;
     $("report-empty").textContent = "报告已删除。";

@@ -997,7 +997,16 @@ if (!window.__COURSE_ASSISTANT_CLIENT__) {
                         'span',
                         { className: 'ca-row' },
                         h('button', { className: 'ca-btn small', onClick: () => download('md'), disabled: !job?.hasReport }, '下载 MD'),
-                        h('button', { className: 'ca-btn small', onClick: () => download('pdf'), disabled: !job?.hasReport || (health && !health.pdf) }, '导出 PDF'),
+                        h(
+                          'button',
+                          {
+                            className: 'ca-btn small',
+                            title: 'PDF 版带封面、课程结构图与页脚，中文排版',
+                            onClick: () => download('pdf'),
+                            disabled: !job?.hasReport || (health && !health.pdf),
+                          },
+                          '下载 PDF',
+                        ),
                         h('button', { className: 'ca-btn small', title: 'Anki 闪卡（CSV）', onClick: () => download('csv'), disabled: !job?.hasReport }, 'Anki 卡片'),
                         h('button', { className: 'ca-btn small', title: '结构化 course.json', onClick: () => download('json'), disabled: !job?.hasReport }, 'course.json'),
                         h(

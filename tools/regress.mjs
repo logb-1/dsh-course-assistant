@@ -57,6 +57,9 @@ import { parseReview, reviewKeyPoints, reviewStats } from '../core/review.js'
 import { buildReport } from '../core/report.js'
 import { describeLevel, levelOfStyle, resolveLevel, resolveSprint, styleOfLevel } from '../core/report-level.js'
 import { buildSprintBooks, planSprint } from '../core/sprint.js'
+import { buildPdf } from '../core/pdfdoc.js'
+import { buildStructure } from '../core/diagram.js'
+import { execFileSync } from 'node:child_process'
 
 const ARGV = process.argv.slice(2)
 const QUIET = ARGV.includes('--quiet')
@@ -1745,6 +1748,102 @@ check('HTTP 模型适配器：401 给出可行动的报错，而不是裸状态�
     return '401 → 指出 key 要换'
   } finally {
     await server.close()
+  }
+})
+
+check('PDF 排版：标题、表格、代码块与结构图都能被本仓库解析器读回', async () => {
+  const markdown = [
+    '# 测试课程学习报告',
+    '',
+    '### 第 1 章 绪论',
+    '这是一段正文，用来确认段落正常。',
+    '',
+    '- 要点甲',
+    '- 要点乙',
+    '',
+    '| 知识点 | 页码 |',
+    '| --- | --- |',
+    '| 多态 | 2 |',
+    '',
+    '```',
+    '第1章 绪论',
+    '|- 第1章 绪论',
+    '```',
+    '',
+    '<!-- 评分：不应出现在 PDF 里 -->',
+  ].join('\n')
+  const structure = buildStructure({
+    courseTitle: '测试课程',
+    chapters: [
+      { index: 1, title: '绪论', subs: ['甲', '乙'] },
+      { index: 2, title: '虚函数', subs: ['丙'] },
+    ],
+  })
+  const buffer = await buildPdf({
+    markdown,
+    courseTitle: '测试课程',
+    subtitle: '学习报告',
+    meta: ['章节：2 章'],
+    structure,
+  })
+  assert(buffer.subarray(0, 5).toString() === '%PDF-', '输出不是 PDF')
+  const parsed = parsePdf(buffer, 'test.pdf')
+  const text = parsed.pages.map((page) => page.text).join('\n')
+  assert(parsed.pages.length >= 3, `页数不对：${parsed.pages.length}`)
+  assert(/多态/.test(text), '表格文字丢了')
+  assert(/要点甲/.test(text), '列表文字丢了')
+  assert(/第1章 绪论/.test(text), '代码块文字丢了（fillAndStroke 覆盖了文字颜色）')
+  assert(/课程结构图/.test(text), '结构图页缺失')
+  assert(!/评分：不应出现/.test(text), 'HTML 注释进了 PDF')
+  return `${parsed.pages.length} 页，${text.length} 字`
+})
+
+check('PDF 结构图：章节点与小节要点按上限裁剪', async () => {
+  const model = buildStructure({
+    courseTitle: '测试课程',
+    chapters: [
+      { index: 1, title: '绪论', subs: ['a', 'b', 'c', 'd'] },
+      { index: 2, title: '虚函数', subs: ['e'] },
+    ],
+  })
+  assert(model.nodes.length === 2, `节点数不对：${model.nodes.length}`)
+  assert(model.nodes[0].concepts.length === 3, `要点没有裁剪：${model.nodes[0].concepts.length}`)
+  assert(model.stats.chapters === 2, '统计不对')
+  return `${model.nodes.length} 章 / ${model.stats.concepts} 个要点`
+})
+
+check('PDF 命令行：meta.json 能生成可打印 PDF', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ca-pdf-'))
+  try {
+    const report = join(dir, 'report.md')
+    const metaPath = join(dir, 'report.meta.json')
+    const out = join(dir, 'report.pdf')
+    writeFileSync(report, '# 测试课程\n\n## 一、课程目录\n\n1. 绪论\n', 'utf8')
+    writeFileSync(
+      metaPath,
+      JSON.stringify({
+        id: 'test',
+        reportPath: report,
+        courseTitle: '测试课程',
+        reportLevel: 'normal',
+        style: 'brief',
+        chapters: [{ index: 1, title: '绪论', subs: ['甲'], pages: [1] }],
+        plan: [],
+        files: [{ name: 'demo.pdf', pages: 2 }],
+        createdAt: new Date().toISOString(),
+      }),
+      'utf8',
+    )
+    execFileSync(process.execPath, [join(HERE, '..', 'bin', 'make-pdf.mjs'), '--meta', metaPath, '--out', out, '--quiet'], {
+      stdio: 'pipe',
+    })
+    const buffer = readFileSync(out)
+    assert(buffer.subarray(0, 5).toString() === '%PDF-', '命令行没有产出 PDF')
+    const parsed = parsePdf(buffer, 'report.pdf')
+    assert(parsed.pages.length >= 2, `命令行 PDF 页数不对：${parsed.pages.length}`)
+    return `${parsed.pages.length} 页`
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 

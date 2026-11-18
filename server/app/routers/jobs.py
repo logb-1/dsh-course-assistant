@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import markdown as markdown_lib
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -193,6 +194,56 @@ def get_report_html(job_id: str, user: User = Depends(get_current_user), db: Ses
         raise HTTPException(status_code=409, detail="报告还没生成好")
     body = markdown_lib.markdown(job.report_md, extensions=["tables", "fenced_code", "sane_lists"])
     return HTMLResponse(f'<article class="report">{body}</article>')
+
+
+@router.get("/{job_id}/report.pdf")
+async def get_report_pdf(
+    job_id: str,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Render (and cache) the printable PDF next to the Markdown report."""
+    job = db.get(Job, job_id)
+    if not job or job.user_id != user.id:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if job.status != "done" or not job.report_md:
+        raise HTTPException(status_code=409, detail="报告还没生成好")
+    if not job.report_path:
+        raise HTTPException(status_code=409, detail="这份报告是旧版本生成的，重新跑一次就能下载 PDF")
+
+    report = Path(job.report_path)
+    if not report.is_file():
+        raise HTTPException(status_code=409, detail="报告文件已不在磁盘上，重新跑一次就能下载 PDF")
+    meta = report.with_suffix(".meta.json")
+    pdf = report.with_suffix(".pdf")
+    settings = request.app.state.settings
+    fresh = pdf.is_file() and pdf.stat().st_mtime >= report.stat().st_mtime
+    if not fresh:
+        if not meta.is_file():
+            raise HTTPException(status_code=409, detail="缺少排版元数据，重新跑一次就能下载 PDF")
+        script = Path(settings.runner_path).resolve().parent / "make-pdf.mjs"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                settings.node_bin,
+                str(script),
+                "--meta",
+                str(meta),
+                "--out",
+                str(pdf),
+                "--quiet",
+                cwd=str(Path(settings.runner_path).resolve().parents[1]),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="PDF 生成超时，请稍后重试")
+        if proc.returncode != 0 or not pdf.is_file():
+            detail = stderr.decode("utf-8", "replace").strip()[-300:] or "PDF 渲染失败"
+            raise HTTPException(status_code=502, detail=f"PDF 渲染失败：{detail}")
+
+    return FileResponse(pdf, media_type="application/pdf", filename=f"course-report-{job.id}.pdf")
 
 
 @router.delete("/{job_id}")

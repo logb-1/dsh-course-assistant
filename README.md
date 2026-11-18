@@ -1,7 +1,8 @@
 # 课程助手 · 课程文件 → 目录 · 知识点 · B 站网课 · 学习报告
 
 DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别章节目录，逐章生成知识点/重点/难点，
-检索 B 站配套网课，最后输出一份 Markdown 学习报告（可导出 PDF），**报告末尾固定附 B 站网课列表**。
+检索 B 站配套网课，最后输出一份 Markdown 学习报告，并可直接导出**带封面与课程结构图的 PDF**，
+**报告末尾固定附 B 站网课列表**。
 
 - **完整页面**：左侧栏「课程助手」图标（`main` 槽位，key `course-assistant`）
 - **常驻入口**：输入框下方 dock 的一行「🎓 课程助手 · 打开面板 →」（`conversation.composer.dock`）
@@ -36,6 +37,23 @@ DeepSeek Harness 插件（bundle）。把课程文件拖进面板，自动识别
 
 附录不会为空：检索被风控或没有相关结果时，该行退化为
 `https://search.bilibili.com/all?keyword=<URL编码关键词>` 搜索入口。
+
+## 1.18.0 新增：可选择 PDF 输出 + 自绘课程结构图
+
+报告页和网页版都能下载 PDF 了。PDF 不经过 Word/LibreOffice，由内置排版器（pdfkit）直接生成：
+封面 → 课程结构图 → 正文 → 附录，A4、中文、带页眉页脚与页码。
+
+- 入口：面板报告工具栏「下载 PDF」；Agent 侧 `/report?format=pdf`；网页版
+  `GET /api/jobs/{id}/report.pdf`（首次现场生成并缓存，之后直接复用）。
+- 结构图：`core/diagram.js` 画「课程 → 章 → 每章前 3 个要点」的分层卡片树，
+  圆角卡片 + 折线连接 + 自动分页；纯矢量，不依赖浏览器或 Mermaid。
+- 排版：`core/pdfdoc.js` 处理标题、段落、列表、表格、代码块、引用、封面、页脚；
+  中文字体用仓库自带的 Noto Sans SC 子集（`assets/fonts/`，约 2.2 MB，OFL 1.1），
+  只嵌入用到的字形，不读系统字体。
+- 兼容：仍保留旧的 `officeToPdf` 路径作为兜底（没有字体文件时才走）；
+  Normal / MAX / PLUS 三种报告的副标题与元信息行各自适配。
+- 限制：表格列宽是启发式的（超长链接会截断显示但可点击）；代码块用比例字体近似等宽；
+  结构图每章最多展示 3 个要点。
 
 ## 1.17.0 新增：PLUS 冲刺模式（五册：计划 / 主册 / 答案册 / 速记 / 刷题）
 
@@ -89,7 +107,7 @@ LLM_BASE_URL=http://127.0.0.1:8787/v1 LLM_API_KEY=stub \
   node tools/smoke-server.mjs http://127.0.0.1:8099 课件.pdf
 ```
 
-Python 侧测试：`server/.venv/Scripts/python -m pytest server/tests -q`（10 项，用假 runner，不碰模型、不碰 Node）。
+Python 侧测试：`server/.venv/Scripts/python -m pytest server/tests -q`（11 项，用假 runner，不碰模型、不碰 Node）。
 
 ## 1.15.1 修复：任务列表不再把索引文件当任务
 
@@ -577,7 +595,7 @@ course-assistant/
 | `samples/<课件名>_学习报告.md` | 34 页 PPTX | 主示例：10 章、30 个视频、3 个系列课 |
 | `samples/<大纲名>_学习报告.md` | 11 章 MD | 真实课程大纲，分章网课命中（CSAPP/袁春风/IEEE754/链接/存储层次…） |
 | `samples/<大纲名>_学习报告.md` | 5 页 PDF | 版式 PDF 的文本层解析示例 |
-| 同名 `.pdf` | — | 由 `officeToPdf` 从 Markdown→docx→PDF 导出 |
+| 同名 `.pdf` | — | 1.18.0 起由内置 `core/pdfdoc.js`（pdfkit）直接排版，带封面与结构图 |
 
 用自己的课件跑一批：`node tools/smoke.mjs <file> [<file>...]`（走 HTTP 路由，产出落在 `samples/`）。
 
@@ -589,13 +607,13 @@ course-assistant/
 | Host 路由 | `GET /course-assistant/health` → 200 `{llm:true,pdf:true}`；`upload`→`run`→`job`→`report(md)`→`report(pdf)` 全链路通过（`tools/smoke.mjs`） |
 | Client 槽位 | `main` key `course-assistant` active；`sidebar.panellist` id `course-assistant` active；`conversation.composer.dock` id `course-assistant-dock` active |
 | 语法 | `node --check` 全部通过（index.js / client.js / core/*.js） |
-| 回归 | `node tools/regress.mjs` 共 71 项：`--unit` **58 项**（合成 PDF / 扫描件、标题卫生与分章边界、模型标题覆盖规则、可信度/证据、CTM 字号、分章指标、单章重跑、PPTX 节映射、导出结构、OCR 分诊/择优/页号、复习资料解析与报告结构、Normal/MAX/PLUS 映射、PLUS 五册与放弃项、任务列表过滤）任何机器可跑；`--real` 13 项需要课件（夹具按 `CA_FIXTURES` → `tools/fixtures/` → 桌面/工作区 解析）；`--strict` 下 unit 缺文件即失败 |
+| 回归 | `node tools/regress.mjs` 共 74 项：`--unit` **61 项**（合成 PDF / 扫描件、标题卫生与分章边界、模型标题覆盖规则、可信度/证据、CTM 字号、分章指标、单章重跑、PPTX 节映射、导出结构、OCR 分诊/择优/页号、复习资料解析与报告结构、Normal/MAX/PLUS 映射、PLUS 五册与放弃项、任务列表过滤、PDF 排版/结构图/命令行）任何机器可跑；`--real` 13 项需要课件（夹具按 `CA_FIXTURES` → `tools/fixtures/` → 桌面/工作区 解析）；`--strict` 下 unit 缺文件即失败 |
 | 真实课件 | `L12`（67 页 PDF）：OCR 分诊只读 26 页，正文 5 502 → 8 214 字；`实验1-高质量编程基础.pptx`：2 张图全读、186 字、2/14 个提示词带上 `[图片]` |
 | CI | `.github/workflows/ci.yml`：Windows + Ubuntu 矩阵跑 `--unit --strict` 与 client 契约测试；package job 校验 tarball 清单（防 `files` 漏文件）与"版本号不许写死" |
 | 分章质量 | `tools/gold/*.json` + `tools/segment-metrics.mjs`（windowdiff / 边界 F1，±1 页容差）；`deck-800`：章 10/11、windowdiff **0.061**、F1 **0.947** |
 | 解析 | pptx 34 页→10 章；pdf 5 页→11 章；docx 无标题样式→9 章（编号推断）；md→11 章 |
 | 报告 | 三份示例的附录两表均非空；总结合格（≤300 字） |
-| PDF 导出 | 三个样本均生成 PDF，文字层可回读（自写解析器 round-trip） |
+| PDF 导出 | 封面 + 课程结构图 + 正文 + 附录，文字层可回读（自写解析器 round-trip）；网页端 `GET /api/jobs/{id}/report.pdf` 真机返回 200 / 67,698 B / 5 页 |
 | **渲染效果** | `tests/visual.spec.mjs`：Playwright + 系统 Edge 打开面板、断言结构与基线截图（`DSH_WEB_URL` 需带 `dsh web` 的 token） |
 
 ## 已知限制

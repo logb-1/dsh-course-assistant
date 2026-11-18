@@ -989,8 +989,9 @@ export async function runPipeline({ id, inputs, options, deps, emit, signal }) {
     }
   }
   if (!courseSummary) {
+    const headline = (point) => (typeof point === 'string' ? point : point?.text || point?.title || '')
     const parts = chapters
-      .map((c) => `${c.title}：${(c.summary?.key_points || []).slice(0, 2).join('、')}`)
+      .map((c) => `${c.title}：${(c.summary?.key_points || []).slice(0, 2).map(headline).filter(Boolean).join('、')}`)
       .join('；')
     courseSummary = parts.slice(0, 280)
   }

@@ -224,6 +224,7 @@ class JobRunner:
                 job.phase = "done"
                 job.progress = 1.0
                 job.report_md = report
+                job.report_path = str(report_path)
                 job.message = f"完成：{int(event.get('chapters') or 0)} 章"
             job.finished_at = utcnow()
             session.commit()

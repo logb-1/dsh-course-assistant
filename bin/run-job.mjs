@@ -23,7 +23,7 @@
  *
  * Exit codes: 0 done · 2 pipeline error · 3 bad spec / missing input.
  */
-import { readFileSync, statSync } from 'node:fs'
+import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createStore } from '../core/store.js'
 import { createBiliClient } from '../core/bili.js'
@@ -141,12 +141,48 @@ async function main() {
       signal: controller.signal,
     })
     const status = final?.status || 'error'
+    let metaPath = ''
+    if (status === 'done' && final?.reportPath) {
+      // The web shell renders PDFs out of process, so the outline it needs for
+      // the structure diagram is persisted next to the report.
+      metaPath = final.reportPath.replace(/\.md$/, '.meta.json')
+      try {
+        writeFileSync(
+          metaPath,
+          `${JSON.stringify(
+            {
+              id: final.id || id,
+              reportPath: final.reportPath,
+              courseTitle: final.courseTitle || '',
+              reportLevel: final.reportLevel || '',
+              style: final.style || '',
+              chapters: (final.chapters || []).map((chapter) => ({
+                index: chapter.index,
+                title: chapter.title,
+                subs: (chapter.subs || []).slice(0, 8),
+                pages: chapter.pages || [],
+              })),
+              plan: final.sprint?.plan || [],
+              files: (final.files || []).map((file) => ({ name: file.name, pages: file.pages || 0 })),
+              createdAt: new Date().toISOString(),
+            },
+            null,
+            2,
+          )}\n`,
+          'utf8',
+        )
+      } catch (error) {
+        metaPath = ''
+        if (!args.quiet) process.stderr.write(`写 meta 失败（PDF 仍可按需生成）：${error.message}\n`)
+      }
+    }
     emit({
       type: 'done',
       id: final?.id || id,
       status,
       error: final?.error || '',
       reportPath: final?.reportPath || '',
+      metaPath,
       reportLevel: final?.reportLevel || '',
       chapters: (final?.chapters || []).length,
       warnings: (final?.warnings || []).slice(0, 20),

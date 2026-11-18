@@ -39,6 +39,16 @@ class Database:
         from . import models  # noqa: F401  (registers the tables)
 
         Base.metadata.create_all(self.engine)
+        self._add_missing_columns()
+
+    def _add_missing_columns(self) -> None:
+        """Keep an existing sqlite file usable after an additive schema change."""
+        if self.engine.url.get_backend_name() != "sqlite":
+            return
+        with self.engine.begin() as conn:
+            columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(jobs)")}
+            if "report_path" not in columns:
+                conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN report_path VARCHAR(512) DEFAULT ''")
 
     def session(self) -> Session:
         return self._session()

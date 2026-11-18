@@ -27,6 +27,24 @@ def wait_done(client, job_id, timeout=15):
     raise AssertionError(f"job {job_id} did not finish in {timeout}s")
 
 
+def test_pdf_needs_meta_and_ownership(make_client):
+    """A report generated before the PDF renderer existed must say so, not 500."""
+    client = make_client()
+    register(client)
+    job = upload(client).json()
+    done = wait_done(client, job["id"])
+    assert done["status"] == "done", done
+
+    # the fake runner writes a report but no .meta.json: re-running is the fix
+    pdf = client.get(f"/api/jobs/{job['id']}/report.pdf")
+    assert pdf.status_code == 409, pdf.text
+    assert "重新跑" in pdf.json()["detail"]
+
+    other = make_client()
+    register(other, email="b@example.com")
+    assert other.get(f"/api/jobs/{job['id']}/report.pdf").status_code == 404
+
+
 def test_register_and_me(make_client):
     client = make_client()
     assert register(client).status_code == 201

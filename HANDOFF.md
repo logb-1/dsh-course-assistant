@@ -1196,3 +1196,72 @@ MAX 每章 review ─┐
 - 待办：重载插件后用真实模型跑一次 PLUS；Render 部署。
 - 已完成：npm 补发（下面「npm 补发」一节）。
 
+## 三十三、2026-11-18 · 1.18.0 可选择 PDF 输出 + 自绘课程结构图
+
+### 状态表
+
+| 项 | 1.18.0 |
+|---|---|
+| 版本 | `package.json` 1.18.0（npm 是否发版待定） |
+| 测试 | `--unit --strict` **61 项**；`--real` 8 项（5 skip）；`pytest` **11 项**；e2e-fake / client 契约通过 |
+| 语法 | `node --check` 全部通过（含 `core/pdfdoc.js`、`core/diagram.js`、`bin/make-pdf.mjs`） |
+| 依赖 | 新增运行依赖 `pdfkit ^0.20.2`（MIT，纯 JS） |
+| 资源 | `assets/fonts/NotoSansSC-Regular.ttf`（2,252,832 B，GB2312+ASCII+标点 7,192 码位）、`OFL.txt` |
+| 入口 | 面板「下载 PDF」· Agent `/report?format=pdf` · 网页 `GET /api/jobs/{id}/report.pdf` |
+
+### 为什么重写 PDF
+
+旧路径是 Markdown → docx（`core/docx.js`）→ 宿主 `officeToPdf().convert()`。三个问题：
+
+1. 网页版没有宿主能力，`health.pdf=false`，根本没有 PDF；
+2. 结构图（`core/mindmap.js` 的文字树 + `<details>` 里的 Mermaid）转成 docx 后不会渲染；
+3. 依赖 Office/LibreOffice，Linux 免费档上不可用。
+
+现在 PDF 由 Node 侧直接排版，插件、Agent、网页三端共用同一渲染器；`officeToPdf` 仅在字体文件缺失时兜底。
+
+### 文件地图
+
+| 文件 | 职责 |
+|---|---|
+| `core/pdfdoc.js` | Markdown → PDF 排版器（pdfkit）：封面、标题、段落、列表、表格、代码块、引用、页脚、书签；`buildPdf({markdown,courseTitle,subtitle,meta,structure})` |
+| `core/diagram.js` | 结构图模型与绘制：`buildStructure({courseTitle,chapters,plan})`、`drawStructure(doc,model,{...})`，分层卡片 + 自动分页 |
+| `bin/make-pdf.mjs` | 命令行：`--meta <report.meta.json> --out <pdf>`；网页端点与手动重排都调它 |
+| `bin/run-job.mjs` | 生成完成后写 `<report>.meta.json`（chapters/subs/plan/files），done 事件带 `metaPath` |
+| `assets/fonts/` | Noto Sans SC 子集 + OFL 许可；`tools/build-cjk-subset.py` 可重建（需 fontTools） |
+| `index.js` | `exportPdf()` 接新渲染器；`health.pdf/pdfFont` 看字体文件；缓存 `job.pdfPath` |
+| `server/app/routers/jobs.py` | `GET /api/jobs/{id}/report.pdf`：校验归属/状态 → 调 make-pdf → `FileResponse` |
+
+### 行为
+
+- **可选输出**：Markdown 仍是主产物（报告页渲染、可复制、可下载 `.md`）；PDF 是并列的下载项。
+- **PDF 结构**：封面（标题/副标题/元信息/免责/字体署名）→ 课程结构图（课程→章→每章前 3 个要点，卡片树）→ 正文（原 Markdown）→ 页脚（课程名 + 第 N 页 / 共 M 页）。
+- **按需生成**：首次几百毫秒，写 `reports/<stem>.pdf` 并缓存；报告更新后自动失效重排。
+- **网页端点**：要求任务 `done` 且有 `report_path`；`pdf` 比 `report.md` 新则直接复用，否则 `make-pdf`（120 s 超时）；旧报告没有 `.meta.json` 返回 409「重新跑一次」。
+- **字号与断行**：中文按字断行，标题做 lookahead 防页底孤行；表格列宽启发式，超长链接截断显示但保留可点击的完整 URL。
+
+### 踩坑
+
+- **pdfkit 在页边距内写页脚会自动 `addPage`**：7 页文档被撑成 19 页。`addFooters` 里临时把
+  `doc.page.margins.bottom = 0`，画完恢复。
+- **`fillAndStroke()` 会把 `fillColor` 改成面板色**：紧随其后的文字与背景同色，整块代码“消失”。
+  画完面板显式 `doc.fillColor('#334155')`。
+- **字体子集里没有制表符/emoji**：`├─│` 折成 ASCII（`|-`、`` `- ``、`|`），`⚠️✅❌` 映射成 `※√×`，
+  否则整行静默丢字。
+- **`registerFont(name, path)` 参数顺序**：把 path 当 name 会报 `ENOENT ... open '...\Noto'`。
+- **测试要用 Buffer**：`core/pdf.js` 的 `parsePdf(buf, name)` 接 Buffer，传路径会当作内容解析。
+- **`core/pipeline.js` 兜底总结曾把要点对象 join 成 `[object Object]`**：改成 `point.text || point.title`。
+
+### 验证
+
+- 单测 61：PDF 排版（`%PDF` 头、页数、文本回读、注释不泄漏）、结构图裁剪、`make-pdf.mjs` 命令行。
+- pytest 11：新增 `test_pdf_needs_meta_and_ownership`（无 meta → 409；他人任务 → 404）；
+  期间删 `DELETE` 装饰器导致 405，已修。
+- 真机：`uvicorn` 8099 + 替身 8787，PLUS 冒烟 `SMOKE PASS`（5 册）；`GET /report.pdf` → 200 /
+  67,698 B / 5 页，结构图与页脚渲染正常。
+- 视觉检查：pypdfium2 渲染 PNG 后逐页看（封面、结构图、正文、附录表、页脚）。
+
+### 限制 / 下一步
+
+- 表格列宽是启发式的，极长单元格仍可能挤；代码块用比例字体近似等宽（未带等宽中文字体）。
+- 结构图每章只展示前 3 个要点；章数很多时翻页。
+- 待办：重载插件后真实模型验证 PDF；npm 发 1.18.0（需要 granular token）；Render 部署仍暂缓。

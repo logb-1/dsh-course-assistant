@@ -58,7 +58,7 @@ PLUS 会额外检查合并报告里 `## 01`…`## 05` 五册齐全。网页版�
 测试：
 
 ```bash
-server/.venv/bin/python -m pytest server/tests -q          # 10 项
+server/.venv/bin/python -m pytest server/tests -q          # 11 项
 ```
 
 `server/tests/fake_runner.py` 冒充 `bin/run-job.mjs`：同样的 `--spec` 参数、同样的 JSONL 事件、写一份假报告，所以 API 测试不依赖 Node、不依赖模型。
@@ -111,6 +111,7 @@ server/.venv/bin/python -m pytest server/tests -q          # 10 项
 | GET | `/api/jobs/{id}` | 状态 / 进度 / 错误 |
 | GET | `/api/jobs/{id}/report` | 报告 Markdown（`text/markdown`） |
 | GET | `/api/jobs/{id}/report.html` | 报告 HTML 片段 |
+| GET | `/api/jobs/{id}/report.pdf` | PDF（封面 + 结构图 + 正文）；按需生成并缓存，无 `.meta.json` 的旧报告返回 409 |
 | DELETE | `/api/jobs/{id}` | 删除（运行中返回 409） |
 | GET | `/healthz` | `{ok:true,version}` |
 

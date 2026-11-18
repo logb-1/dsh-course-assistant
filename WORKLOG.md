@@ -2,6 +2,22 @@
 
 按时间倒序。每条只记：改了什么、证据/数字、踩了什么坑。
 
+## 2026-11-18 · 1.18.0 可选择 PDF 输出 + 自绘课程结构图
+
+- 新增 `core/pdfdoc.js`（pdfkit 直排 Markdown：封面/标题/列表/表格/代码块/引用/页脚/书签）、
+  `core/diagram.js`（课程→章→要点卡片树，自动分页）、`bin/make-pdf.mjs`；
+  `bin/run-job.mjs` 写完报告再写 `<report>.meta.json`，PDF 生成不再依赖 `officeToPdf`。
+- 字体：`assets/fonts/NotoSansSC-Regular.ttf` 2,252,832 B（GB2312+ASCII+标点 7,192 码位，OFL 1.1），
+  `tools/build-cjk-subset.py` 可重建；package.json files 补 `assets/fonts/*` 与 `bin/*.mjs`。
+- 入口：面板「下载 PDF」、Agent `/report?format=pdf`、网页 `GET /api/jobs/{id}/report.pdf`
+  （meta 缺失 409 提示重跑，pdf 比 md 新则复用）。
+- 踩坑：页脚在页边距内会 `addPage`（7 页→19 页，临时把 `margins.bottom` 置 0）；
+  `fillAndStroke` 改掉 `fillColor` 让代码块文字不可见；`├─│`/emoji 不在子集；
+  `registerFont(name,path)` 参数顺序；pipeline 兜底总结把对象 join 成 `[object Object]`。
+- 测试：`--unit` **61 项**（PDF 排版回读、结构图裁剪、make-pdf 命令行），pytest **11 项**
+  （PDF 端点 409/404；期间删掉 DELETE 装饰器导致 405，已修）；真机网页 `report.pdf` 200 / 67,698 B / 5 页。
+- 视觉检查：pypdfium2 渲染 PNG 逐页看，修掉正文压结构图、标题孤行、表格链接列挤成 5 行。
+
 ## 2026-11-18 · npm 补发 1.15.1 / 1.16.0 / 1.17.0
 
 - 旧 token 过期（E401）；`npm login --auth-type=web` 的会话 token 发布时被 2FA 拦（E403）。

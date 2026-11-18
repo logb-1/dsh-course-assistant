@@ -46,6 +46,7 @@ class Job(Base):
     size: Mapped[int] = mapped_column(Integer, default=0)
     options_json: Mapped[str] = mapped_column(Text, default="{}")
     report_md: Mapped[str] = mapped_column(Text, default="")
+    report_path: Mapped[str] = mapped_column(String(512), default="")
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -29,6 +29,7 @@ import { SUPPORTED } from './core/parser.js'
 import { resolveLevel, resolveSprint, styleOfLevel } from './core/report-level.js'
 
 const HERE = join(fileURLToPath(new URL('.', import.meta.url)))
+const PDF_FONT = join(HERE, 'assets', 'fonts', 'NotoSansSC-Regular.ttf')
 const PKG = (() => {
   try {
     return JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8'))
@@ -466,27 +467,65 @@ export function apply(ctx, config = {}) {
     return { inputs, previous }
   }
 
+  /**
+   * PDF export: the report is laid out natively (pdfkit + bundled CJK subset)
+   * and the structure diagram is drawn as vectors. The old docx→LibreOffice path
+   * stays as a fallback for installs where the font asset is missing.
+   */
   async function exportPdf(job) {
     if (job.pdfPath && existsSync(job.pdfPath)) return job.pdfPath
-    const office = ctx.get('officeToPdf')
-    if (!office?.convert) throw new Error('PDF 导出不可用：当前 profile 未提供 officeToPdf 服务')
     const markdown = job.markdown || (job.reportPath && existsSync(job.reportPath) ? readFileSync(job.reportPath, 'utf8') : '')
     if (!markdown) throw new Error('报告尚未生成')
-    const docx = markdownToDocx(markdown, `《${job.courseTitle || '课程'}》学习报告`)
-    const version = String(job.createdAt || Date.now())
-    const result = await office.convert({
-      extension: 'docx',
-      priority: 'foreground',
-      source: {
-        key: `course-assistant:${job.id}`,
-        version,
-        bytes: docx.length,
-        read: async () => ({ bytes: docx, version }),
-      },
-    })
+
+    let buffer = null
+    if (existsSync(PDF_FONT)) {
+      const { buildPdf } = await import('./core/pdfdoc.js')
+      const { buildStructure } = await import('./core/diagram.js')
+      const level = styleOfLevel(job.style || job.reportLevel || config.reportLevel)
+      const subtitle =
+        level === 'sprint' ? '冲刺五册 · PLUS' : level === 'review' ? '复习资料 · MAX' : '学习报告'
+      const files = Array.isArray(job.files) ? job.files : []
+      const pages = files.reduce((total, file) => total + (Number(file.pages) || 0), 0)
+      const meta = [
+        `读取文件：${files.length} 个${pages ? `（${pages} 页）` : ''}`,
+        `章节：${Array.isArray(job.chapters) ? job.chapters.length : 0} 章`,
+        `生成时间：${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+        `报告模式：${subtitle}`,
+      ]
+      if (files.length) {
+        const names = files.slice(0, 4).map((file) => file.name).filter(Boolean)
+        if (names.length) meta.push(`课件：${names.join('、')}${files.length > 4 ? ' 等' : ''}`)
+      }
+      const structure = buildStructure({
+        courseTitle: job.courseTitle || '课程报告',
+        chapters: job.chapters || [],
+        plan: job.sprint?.plan || [],
+      })
+      buffer = await buildPdf({ markdown, courseTitle: job.courseTitle || '课程报告', subtitle, meta, structure })
+    }
+
+    if (!buffer) {
+      const office = ctx.get('officeToPdf')
+      if (!office?.convert) throw new Error('PDF 导出不可用：缺少中文字体，且当前 profile 未提供 officeToPdf 服务')
+      const docx = markdownToDocx(markdown, `《${job.courseTitle || '课程'}》学习报告`)
+      const version = String(job.createdAt || Date.now())
+      const result = await office.convert({
+        extension: 'docx',
+        priority: 'foreground',
+        source: {
+          key: `course-assistant:${job.id}`,
+          version,
+          bytes: docx.length,
+          read: async () => ({ bytes: docx, version }),
+        },
+      })
+      buffer = Buffer.from(result.pdf)
+    }
+
     const pdfPath = (job.reportPath || join(store.reportsDir, `course-${job.id}.md`)).replace(/\.md$/, '.pdf')
-    store.writeBytes(pdfPath, Buffer.from(result.pdf))
+    store.writeBytes(pdfPath, buffer)
     job.pdfPath = pdfPath
+    job.pdfBytes = buffer.length
     store.saveJob(job)
     return pdfPath
   }
@@ -502,7 +541,8 @@ export function apply(ctx, config = {}) {
           ok: true,
           version: PKG.version || 'unknown',
           llm: !!resolveLlm(),
-          pdf: !!ctx.get('officeToPdf')?.convert,
+          pdf: existsSync(PDF_FONT) || !!ctx.get('officeToPdf')?.convert,
+          pdfFont: existsSync(PDF_FONT),
           ocr: ocrAvailable(),
           ocrEngines: await ocrStatus(),
           ocrMode: String(config.ocrMode || 'auto'),
@@ -726,7 +766,8 @@ export function apply(ctx, config = {}) {
             ok: true,
             version: PKG.version || 'unknown',
             llm: !!resolveLlm(),
-            pdf: !!ctx.get('officeToPdf')?.convert,
+            pdf: existsSync(PDF_FONT) || !!ctx.get('officeToPdf')?.convert,
+          pdfFont: existsSync(PDF_FONT),
             ocrEngines: await ocrStatus(),
             dataDir: store.dataDir,
           }
