@@ -99,8 +99,9 @@ Python 侧测试：`server/.venv/Scripts/python -m pytest server/tests -q`（10 
 现在只认 `<8 位十六进制>.json`，单测加了一条「索引文件不算任务」。
 
 日常维护同时核了一遍，没有别的漂移：`--unit` **53 项**、`--real` 可跑的 8 项全绿、
-`e2e-fake` 与 client 契约通过。GitHub 已推 1.15.1；npm 这次没发成——`~/.npmrc` 里的
-token 过期（`npm whoami` 401），重新 `npm login` 后补发即可。
+`e2e-fake` 与 client 契约通过。GitHub 已推 1.15.1；npm 当时因 `~/.npmrc` 的 token 过期
+（`npm whoami` 401）没发成，**2026-11-18 已用带 2FA bypass 的 granular token 补发
+1.15.1 / 1.16.0 / 1.17.0，`latest` = 1.17.0**。
 
 `--real` 的课件夹具按 **`CA_FIXTURES` → `tools/fixtures/` → 桌面 / 工作区** 的顺序找；
 桌面文件被整理后整组会 `SKIP (缺少课件文件)`，把环境变量指过去即可：

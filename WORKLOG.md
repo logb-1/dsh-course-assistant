@@ -2,6 +2,14 @@
 
 按时间倒序。每条只记：改了什么、证据/数字、踩了什么坑。
 
+## 2026-11-18 · npm 补发 1.15.1 / 1.16.0 / 1.17.0
+
+- 旧 token 过期（E401）；`npm login --auth-type=web` 的会话 token 发布时被 2FA 拦（E403）。
+- 用户给 granular token（Bypass 2FA）后用临时 `--userconfig` 发布，不覆盖 `~/.npmrc`；用完删除临时文件。
+- 1.15.1（`532d097`）、1.16.0（`34bed50`）用 `git worktree` 从 tag 检出发布，1.17.0 从 `main`（`68b5209`）；
+  三版分别 49/50/51 文件。npm 返回 `PUT 202` 异步处理，约 2 分钟后 registry 才可见，期间 `npm view` 短暂 404 属正常。
+- 复核 `latest = 1.17.0`，`versions` 含三版；worktree 已清理。
+
 ## 2026-11-18 · 1.17.0 PLUS 冲刺模式（review-sprint 五册）
 
 - 新增 `core/report-level.js` 第三档：`plus → sprint`，`resolveSprint`（天数 1–60 / 目标 30–100 / 分钟 30–600，默认 14/80/120）。

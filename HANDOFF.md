@@ -1040,7 +1040,7 @@ node tools/img-e2e.mjs "C:\path\deck.pptx"                    # 图片 OCR 链�
 | 测试 | Python **9 项**；JS `--unit` **55 项**；`--real` 8 通过 / 5 skip（缺 pptx/docx/md 夹具）；`e2e-fake`、client 契约 |
 | 验证 | 本地 uvicorn + 替身模型跑通 Normal（PDF 1.6 MB → 报告 5.0 KB）与 MAX（pptx 1.5 MB → 8.8 KB） |
 | 部署 | 代码推到 GitHub；Render service **还没建**（要账号/API key） |
-| npm | 仍未发布（1.15.1 起 token 过期） |
+| npm | 当时未发布（1.15.1 起 token 过期）；**2026-11-18 已补发 1.15.1 / 1.16.0 / 1.17.0，见 §32** |
 
 ### 架构：为什么是子进程
 
@@ -1123,7 +1123,7 @@ OpenAI 兼容的 `/chat/completions` 实现同样的 `{provider, model, stream}`
 | 改动 | `core/report.js`、`core/pipeline.js`、`index.js`、`client.js`、`server/`（表单 + 校验）、`tools/regress.mjs`、`tools/stub-llm.mjs`、`tools/smoke-server.mjs` |
 | 测试 | `--unit` **58 项**；`--real` 8 pass / 5 skip；`e2e-fake`、client 契约；Python **10 项** |
 | 真机 | 桌面：L10 PDF（67 页）→ 6 章 / 12 K / 6 Q / 合并报告 15.4 KB / 五册落盘；HTTP：同一 PDF + 替身模型 → 5 册、报告 6.8 KB |
-| npm | 仍未发布（1.15.1 起 token 过期，用户选择先只发 GitHub） |
+| npm | **已发布 1.17.0（2026-11-18 补发 1.15.1 / 1.16.0 / 1.17.0，latest=1.17.0）** |
 | 部署 | Render 仍未建（用户选择暂缓） |
 
 ### 设计：为什么 PLUS 不额外调模型
@@ -1178,9 +1178,21 @@ MAX 每章 review ─┐
   教训：改 UTF-8 文件用编辑工具或 node，不要用 PS 5.1 的管道重写。
 - `server/.venv` 的 pytest 会把 `pytest-of-*` 临时目录建在仓库根，`.gitignore` 已加。
 
+### npm 补发（2026-11-18）
+
+- 旧 token 过期：`npm whoami` → E401。`npm login --auth-type=web` 拿到的会话 token 仍被 2FA 拦：
+  `403 Two-factor authentication or granular access token with bypass 2fa enabled is required to publish`。
+- 用户生成 granular token（Bypass 2FA、Read and write、包 `dsh-course-assistant`），发布时用临时
+  `--userconfig` 指向的独立 npmrc，不写仓库、不覆盖 `~/.npmrc`；发完删除临时文件并提醒撤销 token。
+- 版本按序发起：1.15.1（`532d097`，49 文件 / 523.5 kB）、1.16.0（`34bed50`，50 文件 / 531.6 kB）、
+  1.17.0（`68b5209`，51 文件 / 569.5 kB）。前两个用 `git worktree` 从 tag 检出，发布后已移除。
+- npm 返回 `PUT 202` 走异步流水线：约 2 分钟后 packument 才出现全部版本；期间 `npm view @1.15.1`
+  会短暂 404，不是失败。复核 `dist-tags.latest = 1.17.0`，`versions` 含 1.15.1 / 1.16.0 / 1.17.0。
+
 ### 限制 / 下一步
 
 - 网页版只提供合并 Markdown 下载；独立五册文件在 `DATA_DIR/reports/`（Render 免费档磁盘临时）。
 - 排期是线性估算，不是学习效果承诺；没有真实模型下的 PLUS 质量评估（下一步）。
-- 待办：重载插件后用真实模型跑一次 PLUS；npm 补发 1.15.1 / 1.16.0 / 1.17.0；Render 部署。
+- 待办：重载插件后用真实模型跑一次 PLUS；Render 部署。
+- 已完成：npm 补发（下面「npm 补发」一节）。
 
